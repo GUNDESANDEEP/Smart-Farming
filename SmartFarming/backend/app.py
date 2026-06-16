@@ -39,7 +39,12 @@ app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 mysql = MySQL(app)
 jwt = JWTManager(app)
 CORS(app, resources={r"/api/*": {
-    "origins": [os.getenv('FRONTEND_URL', 'http://localhost:3000'), "http://localhost:3000"],
+    "origins": [
+        os.getenv('FRONTEND_URL', 'http://localhost:3000'),
+        "http://localhost:3000",
+        "https://smart-farming-marketplace.vercel.app",
+        "*"
+    ],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "allow_headers": ["Content-Type", "Authorization"]
 }})

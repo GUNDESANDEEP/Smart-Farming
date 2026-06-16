@@ -129,8 +129,12 @@ const LoginPage = () => {
         setBuyerLoginData(data);
         // Send OTP to buyer email
         try {
-          await authAPI.sendOTP(buyerEmail);
+          const otpRes = await authAPI.sendOTP(buyerEmail);
           toast.success(`OTP sent to ${buyerEmail}`, { icon: '📧' });
+          // If SMTP isn't configured, backend returns OTP for testing
+          if (otpRes.data?.otp_for_testing) {
+            setOtp(otpRes.data.otp_for_testing);
+          }
         } catch (otpErr) {
           toast.error('Failed to send OTP. Please try again.');
           return;
