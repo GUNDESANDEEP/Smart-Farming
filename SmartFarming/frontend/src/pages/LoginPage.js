@@ -119,31 +119,7 @@ const LoginPage = () => {
 
       const data = response.data;
 
-      // Buyer: go to OTP step instead of completing login
-      if (userType === 'buyer') {
-        const buyerEmail = data.user?.email;
-        if (!buyerEmail) {
-          toast.error('No email linked to this account. Contact support.');
-          return;
-        }
-        setBuyerLoginData(data);
-        // Send OTP to buyer email
-        try {
-          const otpRes = await authAPI.sendOTP(buyerEmail);
-          toast.success(`OTP sent to ${buyerEmail}`, { icon: '📧' });
-          // If SMTP isn't configured, backend returns OTP for testing
-          if (otpRes.data?.otp_for_testing) {
-            setOtp(otpRes.data.otp_for_testing);
-          }
-        } catch (otpErr) {
-          toast.error('Failed to send OTP. Please try again.');
-          return;
-        }
-        setOtpStep(2);
-        return;
-      }
-
-      // Farmer & Admin: complete login directly
+      // All roles: complete login directly
       completeLogin(data);
     } catch (error) {
       const msg = error.response?.data?.error || error.response?.data?.message || 'Login failed. Check your credentials.';
