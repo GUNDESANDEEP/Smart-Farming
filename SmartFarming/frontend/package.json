@@ -2,7 +2,6 @@
   "name": "smart-farming-marketplace",
   "version": "1.0.0",
   "description": "Production-ready Smart Farmer Marketplace application",
-  "homepage": "https://gundesandeep.github.io/Smart-Farming",
   "private": true,
   "dependencies": {
     "react": "^18.2.0",
