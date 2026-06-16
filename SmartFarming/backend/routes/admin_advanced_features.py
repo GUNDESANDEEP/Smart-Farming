@@ -61,7 +61,7 @@ def send_email(recipient_email: str, subject: str, body: str, html: Optional[str
             msg.attach(MIMEText(html, 'html'))
 
         # Send via SMTP
-        with smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port']) as server:
+        with smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'], timeout=5) as server:
             server.starttls()
             server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
             server.send_message(msg)

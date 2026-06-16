@@ -63,7 +63,7 @@ def send_email(to_email, subject, message):
         msg['Subject'] = subject
         msg.attach(MIMEText(message, 'html'))
         
-        server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', '587')))
+        server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', '587')), timeout=5)
         server.starttls()
         server.login(sender_email, sender_password)
         server.send_message(msg)
@@ -663,7 +663,7 @@ def forgot_password():
             <p style="color:#888;">Valid for 10 minutes</p>
             </div></body></html>'''
             msg.attach(MIMEText(body, 'html'))
-            server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587)))
+            server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587)), timeout=5)
             server.starttls()
             server.login(os.getenv('EMAIL_SENDER'), os.getenv('EMAIL_PASSWORD'))
             server.send_message(msg)
