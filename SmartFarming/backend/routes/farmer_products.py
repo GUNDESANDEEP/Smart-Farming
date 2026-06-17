@@ -487,8 +487,8 @@ def get_earnings():
         receipt_earnings = BaseModel.execute_query(
             """SELECT 
                 COALESCE(SUM(grand_total), 0) as total,
-                COALESCE(SUM(CASE WHEN MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW()) THEN grand_total ELSE 0 END), 0) as this_month,
-                COALESCE(SUM(CASE WHEN DATE(created_at) = CURDATE() THEN grand_total ELSE 0 END), 0) as today,
+                COALESCE(SUM(CASE WHEN EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM NOW()) THEN grand_total ELSE 0 END), 0) as this_month,
+                COALESCE(SUM(CASE WHEN DATE(created_at) = CURRENT_DATE THEN grand_total ELSE 0 END), 0) as today,
                 COUNT(*) as total_sales
                FROM receipts WHERE farmer_id = %s AND payment_status = 'completed'""",
             (farmer_id,), fetch_one=True

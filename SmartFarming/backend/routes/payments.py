@@ -6,7 +6,7 @@ Handles: Razorpay orders, payment verification, direct sales,
 
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from models.models import BaseModel, get_mysql
+from models.models import BaseModel
 from datetime import datetime
 from dotenv import load_dotenv
 import os
@@ -170,16 +170,12 @@ def generate_payment_otp():
         otp = str(random.randint(100000, 999999))
         expires_at = datetime.now() + __import__('datetime').timedelta(minutes=10)
 
-        # Store OTP
-        otp_id = BaseModel.execute_query(
+        # Store OTP (PostgreSQL uses RETURNING id via execute_insert)
+        otp_ref = BaseModel.execute_insert(
             """INSERT INTO payment_otps (buyer_id, buyer_phone, buyer_email, otp, amount, product_details, farmer_id, status, expires_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s)""",
             (int(buyer_id), buyer_phone, buyer_email, otp, amount, product_details, farmer_id, expires_at)
         )
-
-        # Get the inserted ID
-        inserted = BaseModel.execute_query("SELECT LAST_INSERT_ID() as id", fetch_one=True)
-        otp_ref = inserted['id'] if inserted else otp_id
 
         # Send OTP via email
         if buyer_email:

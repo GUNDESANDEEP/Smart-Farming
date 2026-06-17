@@ -273,18 +273,13 @@ def create_product():
         if price <= 0:
             return jsonify({'error': 'Valid price is required'}), 400
         
-        # Use direct mysql cursor to avoid BaseModel issues
-        from models.models import get_mysql
-        mysql = get_mysql()
-        cursor = mysql.connection.cursor()
-        cursor.execute(
-            """INSERT INTO products (farmer_id, name, description, category, price, quantity, unit, location, discount_percent, status, is_available, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 1, NOW())""",
+        # Use BaseModel for PostgreSQL compatibility
+        from models.models import BaseModel
+        product_id = BaseModel.execute_insert(
+            """INSERT INTO products (farmer_id, name, description, category, price, quantity, unit, location, discount_percentage, status, is_available, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', TRUE, NOW())""",
             (int(farmer_id), name, description, category, price, quantity, unit, location, discount_percent)
         )
-        mysql.connection.commit()
-        product_id = cursor.lastrowid
-        cursor.close()
         
         return jsonify({
             'success': True,
@@ -419,15 +414,15 @@ def get_earnings():
         from models.models import BaseModel
         
         total_row = BaseModel.execute_query(
-            "SELECT COALESCE(SUM(total_price), 0) as total FROM orders WHERE farmer_id = %s AND status = 'delivered'",
+            "SELECT COALESCE(SUM(total_amount), 0) as total FROM orders WHERE farmer_id = %s AND status = 'delivered'",
             (farmer_id,), fetch_one=True
         )
         month_row = BaseModel.execute_query(
-            "SELECT COALESCE(SUM(total_price), 0) as thisMonth FROM orders WHERE farmer_id = %s AND status = 'delivered' AND MONTH(created_at) = MONTH(NOW())",
+            "SELECT COALESCE(SUM(total_amount), 0) as thisMonth FROM orders WHERE farmer_id = %s AND status = 'delivered' AND EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM NOW())",
             (farmer_id,), fetch_one=True
         )
         pending_row = BaseModel.execute_query(
-            "SELECT COALESCE(SUM(total_price), 0) as pending FROM orders WHERE farmer_id = %s AND status IN ('pending', 'confirmed')",
+            "SELECT COALESCE(SUM(total_amount), 0) as pending FROM orders WHERE farmer_id = %s AND status IN ('pending', 'confirmed')",
             (farmer_id,), fetch_one=True
         )
         

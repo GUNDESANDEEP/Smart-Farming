@@ -4,6 +4,7 @@ WARNING: These routes should be disabled in production after setup
 """
 from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash
+from models.models import BaseModel
 import os
 
 bootstrap_bp = Blueprint('bootstrap', __name__, url_prefix='/api/bootstrap')
@@ -27,9 +28,6 @@ def init_admin():
     X-Setup-Key: initial-setup-key-change-me (optional, for security)
     """
     try:
-        from flask import current_app
-        from flask_mysqldb import MySQL
-        
         # Optional security check
         setup_key = os.getenv('SETUP_KEY', 'initial-setup-key-change-me')
         provided_key = request.headers.get('X-Setup-Key', '')
@@ -47,21 +45,14 @@ def init_admin():
         if len(password) < 6:
             return {'success': False, 'error': 'Password too short'}, 400
         
-        # Get database connection
-        mysql = current_app.extensions.get('mysql')
-        if not mysql:
-            return {'success': False, 'error': 'Database not configured'}, 500
-        
         try:
-            cursor = mysql.connection.cursor()
-            
             # Check if any admin exists
-            cursor.execute("SELECT COUNT(*) as count FROM admins")
-            result = cursor.fetchone()
-            admin_count = result[0] if result else 0
+            result = BaseModel.execute_query(
+                "SELECT COUNT(*) as count FROM admins", fetch_one=True
+            )
+            admin_count = result['count'] if result else 0
             
             if admin_count > 0:
-                cursor.close()
                 return {
                     'success': False,
                     'error': 'Admin account already exists'
@@ -71,14 +62,11 @@ def init_admin():
             password_hash = generate_password_hash(password)
             
             # Insert admin
-            cursor.execute(
+            admin_id = BaseModel.execute_insert(
                 """INSERT INTO admins (email, password_hash, first_name, role, is_active, created_at)
-                   VALUES (%s, %s, %s, %s, %s, NOW())""",
-                (email, password_hash, name, 'super_admin', 1)
+                   VALUES (%s, %s, %s, %s, TRUE, NOW())""",
+                (email, password_hash, name, 'super_admin')
             )
-            mysql.connection.commit()
-            admin_id = cursor.lastrowid
-            cursor.close()
             
             return {
                 'success': True,
@@ -88,8 +76,6 @@ def init_admin():
             }, 201
             
         except Exception as db_error:
-            if cursor:
-                cursor.close()
             raise db_error
         
     except Exception as e:

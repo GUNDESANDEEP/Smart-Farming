@@ -54,12 +54,12 @@ def browse_products():
                    f.location as farmer_location
             FROM products p 
             LEFT JOIN farmers f ON p.farmer_id = f.id 
-            WHERE p.is_available = 1 AND p.status = 'approved'
+            WHERE p.is_available = TRUE AND p.status = 'approved'
         """
         params = []
         
         if search_term:
-            query += " AND (p.name LIKE %s OR p.description LIKE %s OR p.category LIKE %s)"
+            query += " AND (p.name ILIKE %s OR p.description ILIKE %s OR p.category ILIKE %s)"
             like = f"%{search_term}%"
             params.extend([like, like, like])
         

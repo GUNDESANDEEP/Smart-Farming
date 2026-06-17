@@ -1,10 +1,11 @@
 """
 Database Setup Script for Smart Farming Backend
-Creates all required tables matching the actual backend code expectations.
+PostgreSQL version for Neon PostgreSQL.
+Creates all required tables.
 Run this once to set up the database.
 """
 
-import MySQLdb
+import psycopg2
 import os
 from dotenv import load_dotenv
 
@@ -13,25 +14,27 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 # Also try parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_USER = os.getenv('DB_USER', 'root')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
-DB_NAME = os.getenv('DB_NAME', 'SmartFarmingDB')
+DATABASE_URL = os.getenv('DATABASE_URL', '')
+
+if not DATABASE_URL:
+    db_host = os.getenv('DB_HOST', 'localhost')
+    db_port = os.getenv('DB_PORT', '5432')
+    db_user = os.getenv('DB_USER', 'postgres')
+    db_password = os.getenv('DB_PASSWORD', '')
+    db_name = os.getenv('DB_NAME', 'smartfarmingdb')
+    DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+    if db_host and 'neon.tech' in db_host:
+        DATABASE_URL += "?sslmode=require"
 
 def get_connection():
-    """Get MySQL connection"""
-    return MySQLdb.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        passwd=DB_PASSWORD,
-        db=DB_NAME
-    )
+    """Get PostgreSQL connection"""
+    return psycopg2.connect(DATABASE_URL)
 
 TABLES = [
     # ==================== FARMERS ====================
     """
     CREATE TABLE IF NOT EXISTS farmers (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         phone VARCHAR(20) UNIQUE NOT NULL,
         email VARCHAR(255),
         password_hash VARCHAR(255) NOT NULL,
@@ -49,17 +52,19 @@ TABLES = [
         latitude DECIMAL(10,6),
         longitude DECIMAL(10,6),
         is_verified BOOLEAN DEFAULT TRUE,
+        is_active BOOLEAN DEFAULT TRUE,
+        user_id INT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_phone (phone),
-        INDEX idx_email (email)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_farmers_phone ON farmers(phone);",
+    "CREATE INDEX IF NOT EXISTS idx_farmers_email ON farmers(email);",
 
     # ==================== BUYERS ====================
     """
     CREATE TABLE IF NOT EXISTS buyers (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         buyer_id INT UNIQUE,
         phone VARCHAR(20) UNIQUE NOT NULL,
         email VARCHAR(255),
@@ -73,294 +78,279 @@ TABLES = [
         address TEXT,
         profile_image VARCHAR(500),
         is_verified BOOLEAN DEFAULT TRUE,
+        user_id INT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_phone (phone),
-        INDEX idx_email (email)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
-
-    # Auto-fill buyer_id = id with a trigger
-    """
-    CREATE TRIGGER IF NOT EXISTS set_buyer_id
-    BEFORE INSERT ON buyers
-    FOR EACH ROW
-    BEGIN
-        IF NEW.buyer_id IS NULL THEN
-            SET NEW.buyer_id = NULL;
-        END IF;
-    END;
-    """,
+    "CREATE INDEX IF NOT EXISTS idx_buyers_phone ON buyers(phone);",
+    "CREATE INDEX IF NOT EXISTS idx_buyers_email ON buyers(email);",
 
     # ==================== PRODUCTS ====================
     """
     CREATE TABLE IF NOT EXISTS products (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        farmer_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        farmer_id INT NOT NULL REFERENCES farmers(id) ON DELETE CASCADE,
         name VARCHAR(255) NOT NULL,
+        slug VARCHAR(300),
         description TEXT,
+        detailed_description TEXT,
         category VARCHAR(100),
         quantity DECIMAL(12,2) DEFAULT 0,
         price DECIMAL(10,2) NOT NULL,
         unit VARCHAR(20) DEFAULT 'kg',
+        min_order_quantity DECIMAL(12,2),
+        max_order_quantity DECIMAL(12,2),
+        discount_percentage DECIMAL(5,2) DEFAULT 0,
         harvest_date DATE,
+        expiry_date DATE,
         location VARCHAR(255),
-        images JSON,
+        images JSONB,
+        specifications JSONB,
+        certifications TEXT,
         is_available BOOLEAN DEFAULT TRUE,
-        status ENUM('pending','approved','rejected','discontinued') DEFAULT 'approved',
-        organic BOOLEAN DEFAULT FALSE,
+        is_organic BOOLEAN DEFAULT FALSE,
+        status VARCHAR(20) DEFAULT 'approved' CHECK (status IN ('pending','approved','rejected','discontinued')),
         average_rating DECIMAL(3,2) DEFAULT 0,
         total_reviews INT DEFAULT 0,
+        views_count INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (farmer_id) REFERENCES farmers(id) ON DELETE CASCADE,
-        INDEX idx_farmer (farmer_id),
-        INDEX idx_category (category),
-        INDEX idx_available (is_available)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_products_farmer ON products(farmer_id);",
+    "CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);",
+    "CREATE INDEX IF NOT EXISTS idx_products_available ON products(is_available);",
 
     # ==================== ORDERS ====================
     """
     CREATE TABLE IF NOT EXISTS orders (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         order_number VARCHAR(50) UNIQUE,
-        buyer_id INT NOT NULL,
-        farmer_id INT NOT NULL,
-        product_id INT,
+        buyer_id INT NOT NULL REFERENCES buyers(id) ON DELETE CASCADE,
+        farmer_id INT NOT NULL REFERENCES farmers(id) ON DELETE CASCADE,
+        product_id INT REFERENCES products(id),
         quantity DECIMAL(12,2),
         total_amount DECIMAL(12,2),
-        status ENUM('pending','confirmed','packed','shipped','delivered','cancelled','returned') DEFAULT 'pending',
+        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','confirmed','packed','shipped','delivered','cancelled','returned')),
         payment_method VARCHAR(50),
-        payment_status ENUM('pending','completed','failed','refunded') DEFAULT 'pending',
+        payment_status VARCHAR(20) DEFAULT 'pending' CHECK (payment_status IN ('pending','completed','failed','refunded')),
         delivery_address TEXT,
         notes TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (buyer_id) REFERENCES buyers(id) ON DELETE CASCADE,
-        FOREIGN KEY (farmer_id) REFERENCES farmers(id) ON DELETE CASCADE,
-        INDEX idx_buyer (buyer_id),
-        INDEX idx_farmer (farmer_id),
-        INDEX idx_status (status)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_orders_buyer ON orders(buyer_id);",
+    "CREATE INDEX IF NOT EXISTS idx_orders_farmer ON orders(farmer_id);",
+    "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);",
 
     # ==================== WALLET ====================
     """
     CREATE TABLE IF NOT EXISTS wallet (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        farmer_id INT NOT NULL UNIQUE,
+        id SERIAL PRIMARY KEY,
+        farmer_id INT NOT NULL UNIQUE REFERENCES farmers(id) ON DELETE CASCADE,
         balance DECIMAL(12,2) DEFAULT 0,
         total_earnings DECIMAL(12,2) DEFAULT 0,
+        total_withdrawn DECIMAL(12,2) DEFAULT 0,
+        withdrawal_pending DECIMAL(12,2) DEFAULT 0,
+        last_withdrawal_date TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (farmer_id) REFERENCES farmers(id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
 
     # ==================== OTP VERIFICATION ====================
     """
     CREATE TABLE IF NOT EXISTS otp_verification (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         phone VARCHAR(20) NOT NULL,
         otp VARCHAR(10) NOT NULL,
-        expires_at DATETIME NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_phone (phone)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_otp_verification_phone ON otp_verification(phone);",
 
     # ==================== CART ====================
     """
     CREATE TABLE IF NOT EXISTS cart (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        buyer_id INT NOT NULL,
-        product_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        buyer_id INT NOT NULL REFERENCES buyers(id) ON DELETE CASCADE,
+        product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
         quantity DECIMAL(12,2) DEFAULT 1,
         price DECIMAL(10,2),
         is_active BOOLEAN DEFAULT TRUE,
         added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (buyer_id) REFERENCES buyers(id) ON DELETE CASCADE,
-        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-        INDEX idx_buyer (buyer_id),
-        UNIQUE KEY unique_buyer_product (buyer_id, product_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        UNIQUE(buyer_id, product_id)
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_cart_buyer ON cart(buyer_id);",
 
     # ==================== PAYMENTS ====================
     """
     CREATE TABLE IF NOT EXISTS payments (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         payment_id INT UNIQUE,
         order_id INT DEFAULT NULL,
         buyer_id INT,
         amount DECIMAL(12,2) NOT NULL,
         payment_method VARCHAR(50) DEFAULT 'razorpay',
-        status ENUM('pending','completed','failed','refunded') DEFAULT 'pending',
+        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','completed','failed','refunded')),
         transaction_id VARCHAR(100),
         razorpay_payment_id VARCHAR(100),
         razorpay_order_id VARCHAR(100),
         razorpay_signature VARCHAR(255),
         error_message TEXT,
-        payment_date TIMESTAMP NULL,
+        payment_date TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_order (order_id),
-        INDEX idx_status (status)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);",
+    "CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);",
 
     # ==================== BUYER REVIEWS ====================
     """
     CREATE TABLE IF NOT EXISTS buyer_reviews (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        order_id INT NOT NULL,
-        buyer_id INT NOT NULL,
-        product_id INT NOT NULL,
-        farmer_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        order_id INT NOT NULL REFERENCES orders(id),
+        buyer_id INT NOT NULL REFERENCES buyers(id),
+        product_id INT NOT NULL REFERENCES products(id),
+        farmer_id INT NOT NULL REFERENCES farmers(id),
         product_rating INT DEFAULT 5,
         product_review TEXT,
         farmer_rating INT DEFAULT 5,
         farmer_review TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders(id),
-        FOREIGN KEY (buyer_id) REFERENCES buyers(id),
-        FOREIGN KEY (product_id) REFERENCES products(id),
-        FOREIGN KEY (farmer_id) REFERENCES farmers(id),
-        INDEX idx_product (product_id),
-        INDEX idx_farmer (farmer_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_buyer_reviews_product ON buyer_reviews(product_id);",
+    "CREATE INDEX IF NOT EXISTS idx_buyer_reviews_farmer ON buyer_reviews(farmer_id);",
 
     # ==================== BUYER ADDRESSES ====================
     """
     CREATE TABLE IF NOT EXISTS buyer_addresses (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        buyer_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        buyer_id INT NOT NULL REFERENCES buyers(id) ON DELETE CASCADE,
         type VARCHAR(50) DEFAULT 'home',
         address TEXT,
         city VARCHAR(100),
         state VARCHAR(100),
         pincode VARCHAR(10),
         is_default BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (buyer_id) REFERENCES buyers(id) ON DELETE CASCADE,
-        INDEX idx_buyer (buyer_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_buyer_addresses_buyer ON buyer_addresses(buyer_id);",
 
     # ==================== ADMIN ACTIVITY LOG ====================
     """
     CREATE TABLE IF NOT EXISTS admin_activity_log (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         admin_id INT NOT NULL,
         action VARCHAR(100) NOT NULL,
         module VARCHAR(50),
         target_id INT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_admin (admin_id),
-        INDEX idx_action (action)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_admin_activity_admin ON admin_activity_log(admin_id);",
 
-    # ==================== ADMINS (if not exists) ====================
+    # ==================== ADMINS ====================
     """
     CREATE TABLE IF NOT EXISTS admins (
-        admin_id INT PRIMARY KEY AUTO_INCREMENT,
+        admin_id SERIAL PRIMARY KEY,
         email VARCHAR(100) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL,
         first_name VARCHAR(50) NOT NULL,
         last_name VARCHAR(50),
-        role ENUM('super_admin','moderator','analyst') DEFAULT 'moderator',
-        permissions JSON,
+        role VARCHAR(20) DEFAULT 'moderator' CHECK (role IN ('super_admin','moderator','analyst')),
+        permissions JSONB,
+        user_id INT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        last_login DATETIME,
-        is_active TINYINT(1) DEFAULT 1,
-        INDEX idx_role (role),
-        INDEX idx_active (is_active)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP,
+        is_active BOOLEAN DEFAULT TRUE
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_admins_role ON admins(role);",
+    "CREATE INDEX IF NOT EXISTS idx_admins_active ON admins(is_active);",
 
     # ==================== ORDER TRACKING ====================
     """
     CREATE TABLE IF NOT EXISTS order_tracking (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        order_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        order_id INT NOT NULL REFERENCES orders(id),
         status VARCHAR(50) NOT NULL,
         location VARCHAR(255),
         latitude DECIMAL(10,8),
         longitude DECIMAL(11,8),
         description TEXT,
         updated_by VARCHAR(50),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
 
     # ==================== RETURN REQUESTS ====================
     """
     CREATE TABLE IF NOT EXISTS return_requests (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        order_id INT NOT NULL,
-        buyer_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        order_id INT NOT NULL REFERENCES orders(id),
+        buyer_id INT NOT NULL REFERENCES buyers(id),
         reason TEXT NOT NULL,
-        status ENUM('requested','approved','rejected','completed') DEFAULT 'requested',
+        status VARCHAR(20) DEFAULT 'requested' CHECK (status IN ('requested','approved','rejected','completed')),
         admin_notes TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders(id),
-        FOREIGN KEY (buyer_id) REFERENCES buyers(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
 
     # ==================== DISPUTES ====================
     """
     CREATE TABLE IF NOT EXISTS disputes (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        order_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        order_id INT NOT NULL REFERENCES orders(id),
         raised_by VARCHAR(50) NOT NULL,
         raised_by_id INT NOT NULL,
         type VARCHAR(50),
         description TEXT NOT NULL,
-        status ENUM('open','investigating','resolved','closed') DEFAULT 'open',
+        status VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open','investigating','resolved','closed')),
         resolution TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
 
     # ==================== AI LOGS ====================
     """
     CREATE TABLE IF NOT EXISTS ai_logs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        id SERIAL PRIMARY KEY,
         user_id INT,
         user_type VARCHAR(20),
         feature VARCHAR(50) NOT NULL,
-        input_data JSON,
-        output_data JSON,
+        input_data JSONB,
+        output_data JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    );
     """,
 
     # ==================== REVIEW REPORTS ====================
     """
     CREATE TABLE IF NOT EXISTS review_reports (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        review_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        review_id INT NOT NULL REFERENCES buyer_reviews(id),
         reported_by INT NOT NULL,
         reason TEXT NOT NULL,
-        status ENUM('pending','reviewed','dismissed') DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (review_id) REFERENCES buyer_reviews(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','reviewed','dismissed')),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
 
     # ==================== OTPs (for email/login OTP verification) ====================
     """
     CREATE TABLE IF NOT EXISTS otps (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         email VARCHAR(255),
         phone VARCHAR(20),
         otp VARCHAR(10) NOT NULL,
@@ -368,36 +358,36 @@ TABLES = [
         is_verified BOOLEAN DEFAULT FALSE,
         attempts INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at DATETIME NOT NULL,
-        INDEX idx_email (email),
-        INDEX idx_phone (phone)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        expires_at TIMESTAMP NOT NULL
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_otps_email ON otps(email);",
+    "CREATE INDEX IF NOT EXISTS idx_otps_phone ON otps(phone);",
 
     # ==================== PAYMENT OTPs ====================
     """
     CREATE TABLE IF NOT EXISTS payment_otps (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         buyer_id INT,
         buyer_phone VARCHAR(20),
         buyer_email VARCHAR(255),
         otp VARCHAR(10) NOT NULL,
         amount DECIMAL(12,2),
-        product_details JSON,
+        product_details JSONB,
         farmer_id INT,
-        status ENUM('pending','verified','expired') DEFAULT 'pending',
-        verified_at TIMESTAMP NULL,
+        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','verified','expired')),
+        verified_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at DATETIME NOT NULL,
-        INDEX idx_otp (otp),
-        INDEX idx_status (status)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        expires_at TIMESTAMP NOT NULL
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_payment_otps_otp ON payment_otps(otp);",
+    "CREATE INDEX IF NOT EXISTS idx_payment_otps_status ON payment_otps(status);",
 
     # ==================== RECEIPTS ====================
     """
     CREATE TABLE IF NOT EXISTS receipts (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         receipt_id VARCHAR(50) UNIQUE NOT NULL,
         payment_id INT,
         buyer_id INT,
@@ -411,68 +401,139 @@ TABLES = [
         buyer_phone VARCHAR(20),
         buyer_email VARCHAR(255),
         qr_code VARCHAR(500),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_receipt_id (receipt_id),
-        INDEX idx_farmer (farmer_id),
-        INDEX idx_buyer (buyer_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_receipts_receipt_id ON receipts(receipt_id);",
+    "CREATE INDEX IF NOT EXISTS idx_receipts_farmer ON receipts(farmer_id);",
+    "CREATE INDEX IF NOT EXISTS idx_receipts_buyer ON receipts(buyer_id);",
 
     # ==================== RECEIPT ITEMS ====================
     """
     CREATE TABLE IF NOT EXISTS receipt_items (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        receipt_id INT NOT NULL,
+        id SERIAL PRIMARY KEY,
+        receipt_id INT NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
         product_id INT,
         product_name VARCHAR(255),
         quantity_kg DECIMAL(12,2) DEFAULT 0,
         price_per_kg DECIMAL(10,2) DEFAULT 0,
         product_quality VARCHAR(50) DEFAULT 'Standard',
-        item_total DECIMAL(12,2) DEFAULT 0,
-        FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE,
-        INDEX idx_receipt (receipt_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        item_total DECIMAL(12,2) DEFAULT 0
+    );
     """,
+    "CREATE INDEX IF NOT EXISTS idx_receipt_items_receipt ON receipt_items(receipt_id);",
 
     # ==================== TRANSACTIONS ====================
     """
     CREATE TABLE IF NOT EXISTS transactions (
-        id INT PRIMARY KEY AUTO_INCREMENT,
+        id SERIAL PRIMARY KEY,
         transaction_id VARCHAR(100) UNIQUE,
         payment_id INT,
         receipt_id INT,
         user_id INT,
         user_type VARCHAR(20),
-        type ENUM('credit','debit') NOT NULL,
+        type VARCHAR(10) NOT NULL CHECK (type IN ('credit','debit')),
         amount DECIMAL(12,2) NOT NULL,
         description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_transactions_tid ON transactions(transaction_id);",
+    "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id, user_type);",
+
+    # ==================== CONVERSATIONS ====================
+    """
+    CREATE TABLE IF NOT EXISTS conversations (
+        id SERIAL PRIMARY KEY,
+        user_1_id INT NOT NULL,
+        user_2_id INT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_transaction_id (transaction_id),
-        INDEX idx_user (user_id, user_type)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_1_id, user_2_id)
+    );
+    """,
+
+    # ==================== MESSAGES ====================
+    """
+    CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+        conversation_id INT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        sender_id INT NOT NULL,
+        receiver_id INT NOT NULL,
+        content TEXT,
+        attachment_url VARCHAR(500),
+        is_read BOOLEAN DEFAULT FALSE,
+        read_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+
+    # ==================== NOTIFICATIONS ====================
+    """
+    CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL,
+        title VARCHAR(255),
+        message TEXT,
+        type VARCHAR(50),
+        data JSONB,
+        action_url VARCHAR(500),
+        is_read BOOLEAN DEFAULT FALSE,
+        read_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+
+    # ==================== USERS (if auth routes use it) ====================
+    """
+    CREATE TABLE IF NOT EXISTS roles (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(50) UNIQUE NOT NULL
+    );
+    """,
+    """
+    INSERT INTO roles (name) VALUES ('farmer'), ('buyer'), ('admin')
+    ON CONFLICT (name) DO NOTHING;
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(100),
+        email VARCHAR(255),
+        phone VARCHAR(20),
+        password_hash VARCHAR(255),
+        first_name VARCHAR(100),
+        last_name VARCHAR(100),
+        profile_image VARCHAR(500),
+        role_id INT REFERENCES roles(id),
+        firebase_uid VARCHAR(255),
+        status VARCHAR(20) DEFAULT 'active',
+        is_verified BOOLEAN DEFAULT FALSE,
+        email_verified_at TIMESTAMP,
+        phone_verified_at TIMESTAMP,
+        last_login TIMESTAMP,
+        two_factor_enabled BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """,
 ]
 
-# Wallet ALTER statements to add missing columns
-WALLET_ALTERS = [
-    "ALTER TABLE wallet ADD COLUMN total_withdrawn DECIMAL(12,2) DEFAULT 0",
-    "ALTER TABLE wallet ADD COLUMN withdrawal_pending DECIMAL(12,2) DEFAULT 0",
-    "ALTER TABLE wallet ADD COLUMN last_withdrawal_date TIMESTAMP NULL",
-]
-
-# Update buyer_id after insert
-BUYER_TRIGGER = """
-DROP TRIGGER IF EXISTS update_buyer_id;
-"""
-
-BUYER_TRIGGER_2 = """
-CREATE TRIGGER update_buyer_id
-AFTER INSERT ON buyers
-FOR EACH ROW
+# ==================== AUTO-UPDATE updated_at FUNCTION ====================
+UPDATE_TRIGGER_FUNC = """
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
 BEGIN
-    UPDATE buyers SET buyer_id = NEW.id WHERE id = NEW.id AND buyer_id IS NULL;
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
 END;
+$$ LANGUAGE plpgsql;
 """
+
+UPDATE_TRIGGER_TABLES = [
+    'farmers', 'buyers', 'products', 'orders', 'wallet', 'payments',
+    'return_requests', 'disputes', 'admins', 'conversations'
+]
 
 
 def setup_database():
@@ -480,8 +541,8 @@ def setup_database():
     conn = get_connection()
     cursor = conn.cursor()
     
-    print(f"Connected to database: {DB_NAME}")
-    print(f"Host: {DB_HOST}, User: {DB_USER}")
+    print(f"Connected to PostgreSQL (Neon)")
+    print(f"Database URL: {DATABASE_URL[:50]}...")
     print("=" * 60)
     
     success_count = 0
@@ -492,56 +553,85 @@ def setup_database():
             cursor.execute(sql)
             conn.commit()
             # Extract table name from SQL
-            table_name = "unknown"
+            table_name = "statement"
             sql_upper = sql.strip().upper()
             if "CREATE TABLE" in sql_upper:
                 parts = sql.strip().split()
                 for j, part in enumerate(parts):
-                    if part.upper() in ('TABLE', 'EXISTS'):
-                        if j + 1 < len(parts):
-                            table_name = parts[j + 1].strip('(`')
-                if 'IF NOT EXISTS' in sql_upper:
-                    parts2 = sql.strip().split('EXISTS')
-                    if len(parts2) > 1:
-                        table_name = parts2[1].strip().split()[0].strip('(`')
+                    if part.upper() == 'EXISTS' and j + 1 < len(parts):
+                        table_name = parts[j + 1].strip('(').strip()
+                        break
+            elif "CREATE INDEX" in sql_upper:
+                table_name = "index"
+            elif "INSERT" in sql_upper:
+                table_name = "seed data"
                         
-            elif "CREATE TRIGGER" in sql_upper:
-                table_name = "trigger"
-            
             print(f"  [OK] [{i+1}] Created/verified: {table_name}")
             success_count += 1
         except Exception as e:
+            conn.rollback()
             error_msg = str(e)
-            # Triggers with IF NOT EXISTS may fail on older MySQL - that's OK
-            if 'trigger' in sql.lower() and ('already exists' in error_msg.lower() or 'Trigger' in error_msg):
-                print(f"  [WARN]  [{i+1}] Trigger already exists (OK)")
+            if 'already exists' in error_msg.lower():
+                print(f"  [SKIP] [{i+1}] Already exists (OK)")
                 success_count += 1
             else:
                 print(f"  [ERR] [{i+1}] Error: {error_msg}")
                 error_count += 1
     
-    # Run wallet ALTER statements
-    print("\n-- Adding missing wallet columns --")
-    for alter_sql in WALLET_ALTERS:
+    # Create updated_at trigger function
+    print("\n-- Creating auto-update trigger function --")
+    try:
+        cursor.execute(UPDATE_TRIGGER_FUNC)
+        conn.commit()
+        print("  [OK] update_updated_at_column() function created")
+    except Exception as e:
+        conn.rollback()
+        print(f"  [WARN] Trigger function: {e}")
+    
+    # Apply trigger to tables
+    for table in UPDATE_TRIGGER_TABLES:
         try:
-            cursor.execute(alter_sql)
+            trigger_name = f"set_updated_at_{table}"
+            cursor.execute(f"""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_trigger WHERE tgname = '{trigger_name}'
+                    ) THEN
+                        CREATE TRIGGER {trigger_name}
+                        BEFORE UPDATE ON {table}
+                        FOR EACH ROW
+                        EXECUTE FUNCTION update_updated_at_column();
+                    END IF;
+                END $$;
+            """)
             conn.commit()
-            col_name = alter_sql.split("ADD COLUMN")[1].strip().split()[0]
-            print(f"  [OK] Added wallet column: {col_name}")
+            print(f"  [OK] Trigger on {table}")
         except Exception as e:
-            error_msg = str(e)
-            if 'Duplicate column' in error_msg or 'duplicate' in error_msg.lower():
-                col_name = alter_sql.split("ADD COLUMN")[1].strip().split()[0]
-                print(f"  [SKIP] Wallet column already exists: {col_name}")
-            else:
-                print(f"  [ERR] Wallet ALTER error: {error_msg}")
+            conn.rollback()
+            print(f"  [WARN] Trigger on {table}: {e}")
+    
+    # Auto-fill buyer_id = id
+    print("\n-- Setting up buyer_id auto-fill --")
+    try:
+        cursor.execute("""
+            UPDATE buyers SET buyer_id = id WHERE buyer_id IS NULL;
+        """)
+        conn.commit()
+        print("  [OK] buyer_id backfilled")
+    except Exception as e:
+        conn.rollback()
+        print(f"  [WARN] buyer_id backfill: {e}")
     
     # Verify tables exist
     print("\n" + "=" * 60)
     print("Verifying tables...")
-    cursor.execute("SHOW TABLES")
+    cursor.execute("""
+        SELECT tablename FROM pg_tables 
+        WHERE schemaname = 'public'
+        ORDER BY tablename
+    """)
     tables = cursor.fetchall()
-    print(f"\nTables in {DB_NAME}:")
+    print(f"\nTables in database:")
     for t in tables:
         print(f"   - {t[0]}")
     
@@ -555,6 +645,6 @@ def setup_database():
 
 
 if __name__ == '__main__':
-    print(">> Smart Farming Database Setup")
+    print(">> Smart Farming Database Setup (PostgreSQL)")
     print("=" * 60)
     setup_database()

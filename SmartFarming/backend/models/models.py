@@ -1,71 +1,89 @@
 """
 Complete Models for Smart Farming Marketplace
+PostgreSQL version using psycopg2 connection pool.
 Includes: User, Farmer, Buyer, Admin, Product, Order, Payment, Review, etc.
 """
 
 from datetime import datetime, timedelta
-from flask_mysqldb import MySQL
 import json
 
-# Global MySQL instance
-_mysql = None
+# Global DB pool instance
+_db_pool = None
 
-def set_mysql_instance(mysql):
-    global _mysql
-    _mysql = mysql
+def set_db_pool(pool):
+    global _db_pool
+    _db_pool = pool
 
-def get_mysql():
-    global _mysql
-    if _mysql is None:
-        raise RuntimeError("MySQL instance not initialized")
-    return _mysql
+def get_db_pool():
+    global _db_pool
+    if _db_pool is None:
+        raise RuntimeError("Database pool not initialized")
+    return _db_pool
 
 # ============================================================================
 # BASE MODEL CLASS
 # ============================================================================
 class BaseModel:
-    """Base model with common database operations"""
+    """Base model with common database operations using psycopg2 connection pool"""
     
     @staticmethod
     def execute_query(query, params=None, fetch_one=False, fetch_all=False):
         """Execute query and return results"""
+        pool = get_db_pool()
+        conn = pool.getconn()
         try:
-            mysql = get_mysql()
-            cursor = mysql.connection.cursor()
+            from psycopg2.extras import RealDictCursor
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
             
-            mysql.connection.commit()
+            conn.commit()
             
             if fetch_one:
-                return cursor.fetchone()
+                result = cursor.fetchone()
+                return dict(result) if result else None
             elif fetch_all:
-                return cursor.fetchall()
+                results = cursor.fetchall()
+                return [dict(row) for row in results] if results else []
             else:
                 return cursor.rowcount
         except Exception as e:
+            conn.rollback()
             print(f"Database error: {e}")
             raise
         finally:
             cursor.close()
+            pool.putconn(conn)
     
     @staticmethod
     def execute_insert(query, params):
-        """Execute insert and return last insert id"""
+        """Execute insert and return last insert id using RETURNING clause"""
+        pool = get_db_pool()
+        conn = pool.getconn()
         try:
-            mysql = get_mysql()
-            cursor = mysql.connection.cursor()
+            from psycopg2.extras import RealDictCursor
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # Add RETURNING id if not already present
+            query_upper = query.strip().upper()
+            if 'RETURNING' not in query_upper and query_upper.startswith('INSERT'):
+                query = query.rstrip().rstrip(';') + ' RETURNING id'
+            
             cursor.execute(query, params)
-            mysql.connection.commit()
-            return cursor.lastrowid
+            conn.commit()
+            
+            result = cursor.fetchone()
+            return result['id'] if result else None
         except Exception as e:
+            conn.rollback()
             print(f"Insert error: {e}")
             raise
         finally:
             cursor.close()
+            pool.putconn(conn)
 
 # ============================================================================
 # USER MODEL
@@ -240,11 +258,14 @@ class Farmer(BaseModel):
                cos(radians(longitude) - radians(%s)) + sin(radians(%s)) * 
                sin(radians(latitude)))) AS distance
         FROM farmers f
-        WHERE is_active = TRUE AND is_verified = TRUE
-        HAVING distance < %s
+        LEFT JOIN users u ON f.user_id = u.id
+        WHERE f.is_active = TRUE AND f.is_verified = TRUE
+          AND (3959 * acos(cos(radians(%s)) * cos(radians(latitude)) * 
+               cos(radians(longitude) - radians(%s)) + sin(radians(%s)) * 
+               sin(radians(latitude)))) < %s
         ORDER BY distance
         """
-        return Farmer.execute_query(query, (latitude, longitude, latitude, radius_km), fetch_all=True)
+        return Farmer.execute_query(query, (latitude, longitude, latitude, latitude, longitude, latitude, radius_km), fetch_all=True)
     
     @staticmethod
     def get_farmer_stats(farmer_id):
@@ -252,18 +273,16 @@ class Farmer(BaseModel):
         query = """
         SELECT 
             f.id,
-            u.first_name,
-            u.last_name,
             COUNT(DISTINCT p.id) as total_products,
             COUNT(DISTINCT o.id) as total_orders,
             SUM(CASE WHEN o.status = 'delivered' THEN 1 ELSE 0 END) as delivered_orders,
-            SUM(CASE WHEN o.status = 'delivered' THEN o.final_price ELSE 0 END) as total_earnings,
-            AVG(CASE WHEN fr.rating IS NOT NULL THEN fr.rating ELSE 0 END) as average_rating,
-            COUNT(DISTINCT fr.id) as total_ratings
+            COALESCE(SUM(CASE WHEN o.status = 'delivered' THEN o.total_amount ELSE 0 END), 0) as total_earnings,
+            COALESCE(AVG(CASE WHEN br.farmer_rating IS NOT NULL THEN br.farmer_rating ELSE NULL END), 0) as average_rating,
+            COUNT(DISTINCT br.id) as total_ratings
         FROM farmers f
         LEFT JOIN products p ON f.id = p.farmer_id
         LEFT JOIN orders o ON f.id = o.farmer_id
-        LEFT JOIN farmer_ratings fr ON f.id = fr.farmer_id
+        LEFT JOIN buyer_reviews br ON f.id = br.farmer_id
         WHERE f.id = %s
         GROUP BY f.id
         """
@@ -327,15 +346,13 @@ class Buyer(BaseModel):
         query = """
         SELECT 
             b.id,
-            u.first_name,
-            u.last_name,
             COUNT(DISTINCT o.id) as total_orders,
-            SUM(CASE WHEN o.status = 'delivered' THEN o.final_price ELSE 0 END) as total_spent,
-            AVG(CASE WHEN r.rating IS NOT NULL THEN r.rating ELSE 0 END) as average_rating,
-            COUNT(DISTINCT r.id) as total_reviews
+            COALESCE(SUM(CASE WHEN o.status = 'delivered' THEN o.total_amount ELSE 0 END), 0) as total_spent,
+            COALESCE(AVG(CASE WHEN br.product_rating IS NOT NULL THEN br.product_rating ELSE NULL END), 0) as average_rating,
+            COUNT(DISTINCT br.id) as total_reviews
         FROM buyers b
         LEFT JOIN orders o ON b.id = o.buyer_id
-        LEFT JOIN reviews r ON b.id = r.buyer_id
+        LEFT JOIN buyer_reviews br ON b.id = br.buyer_id
         WHERE b.id = %s
         GROUP BY b.id
         """
@@ -351,7 +368,7 @@ class Product(BaseModel):
     def create(farmer_id, category_id, name, slug, description, quantity, unit, price, location):
         """Create product"""
         query = """
-        INSERT INTO products (farmer_id, category_id, name, slug, description, quantity, unit, price, location, is_available)
+        INSERT INTO products (farmer_id, category, name, slug, description, quantity, unit, price, location, is_available)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
         """
         return Product.execute_insert(query, (farmer_id, category_id, name, slug, description, quantity, unit, price, location))
@@ -397,12 +414,12 @@ class Product(BaseModel):
         query = """
         SELECT p.*
         FROM products p
-        WHERE p.is_available = 1 AND (p.name LIKE %s OR p.description LIKE %s)
+        WHERE p.is_available = TRUE AND (p.name ILIKE %s OR p.description ILIKE %s)
         """
         params = [f"%{search_term}%", f"%{search_term}%"]
         
         if category_id:
-            query += " AND p.category_id = %s"
+            query += " AND p.category = %s"
             params.append(category_id)
         
         query += " ORDER BY p.created_at DESC LIMIT %s OFFSET %s"
@@ -432,7 +449,7 @@ class Product(BaseModel):
     @staticmethod
     def increment_views(product_id):
         """Increment product views"""
-        query = "UPDATE products SET views_count = views_count + 1 WHERE id = %s"
+        query = "UPDATE products SET views_count = COALESCE(views_count, 0) + 1 WHERE id = %s"
         return Product.execute_query(query, (product_id,)) > 0
     
     @staticmethod
@@ -441,8 +458,8 @@ class Product(BaseModel):
         query = """
         SELECT p.*
         FROM products p
-        WHERE p.is_available = 1
-        ORDER BY p.average_rating DESC
+        WHERE p.is_available = TRUE
+        ORDER BY p.average_rating DESC NULLS LAST
         LIMIT %s
         """
         return Product.execute_query(query, (limit,), fetch_all=True)
@@ -459,24 +476,25 @@ class Order(BaseModel):
         """Create order"""
         query = """
         INSERT INTO orders (order_number, farmer_id, buyer_id, product_id, quantity, 
-                          unit_price, total_price, final_price, delivery_address, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                           total_amount, delivery_address, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
         """
         return Order.execute_insert(query, (order_number, farmer_id, buyer_id, product_id, 
-                                           quantity, unit_price, total_price, final_price, 
-                                           delivery_address))
+                                           quantity, total_price, delivery_address))
     
     @staticmethod
     def get_by_id(order_id):
         """Get order by ID"""
         query = """
         SELECT o.*, p.name as product_name,
-               f.first_name as farmer_first_name, f.last_name as farmer_last_name,
-               b.first_name as buyer_first_name, b.last_name as buyer_last_name
+               fu.first_name as farmer_first_name, fu.last_name as farmer_last_name,
+               bu.first_name as buyer_first_name, bu.last_name as buyer_last_name
         FROM orders o
         LEFT JOIN products p ON o.product_id = p.id
         LEFT JOIN farmers f ON o.farmer_id = f.id
+        LEFT JOIN users fu ON f.user_id = fu.id
         LEFT JOIN buyers b ON o.buyer_id = b.id
+        LEFT JOIN users bu ON b.user_id = bu.id
         WHERE o.id = %s
         """
         return Order.execute_query(query, (order_id,), fetch_one=True)
@@ -486,10 +504,10 @@ class Order(BaseModel):
         """Get orders for farmer"""
         query = """
         SELECT o.*, p.name as product_name,
-               b.first_name as buyer_first_name, b.last_name as buyer_last_name, 
                b.phone as buyer_phone, b.email as buyer_email,
                b.location as buyer_address, b.city as buyer_city,
-               b.state as buyer_state, b.pincode as buyer_pincode
+               b.state as buyer_state, b.pincode as buyer_pincode,
+               b.first_name as buyer_first_name, b.last_name as buyer_last_name
         FROM orders o
         LEFT JOIN products p ON o.product_id = p.id
         LEFT JOIN buyers b ON o.buyer_id = b.id
@@ -599,29 +617,28 @@ class Review(BaseModel):
     def create(product_id, buyer_id, rating, comment, order_id=None):
         """Create review"""
         query = """
-        INSERT INTO reviews (product_id, order_id, buyer_id, rating, comment, is_verified_purchase, is_approved)
-        VALUES (%s, %s, %s, %s, %s, TRUE, FALSE)
+        INSERT INTO buyer_reviews (product_id, order_id, buyer_id, product_rating, product_review, farmer_id)
+        SELECT %s, %s, %s, %s, %s, p.farmer_id FROM products p WHERE p.id = %s
         """
-        return Review.execute_insert(query, (product_id, order_id, buyer_id, rating, comment))
+        return Review.execute_insert(query, (product_id, order_id, buyer_id, rating, comment, product_id))
     
     @staticmethod
     def get_product_reviews(product_id, limit=20, offset=0):
         """Get reviews for product"""
         query = """
-        SELECT r.*, u.first_name, u.last_name
-        FROM reviews r
-        LEFT JOIN buyers b ON r.buyer_id = b.id
-        WHERE r.product_id = %s AND r.is_approved = TRUE
-        ORDER BY r.created_at DESC
+        SELECT br.*, b.first_name, b.last_name
+        FROM buyer_reviews br
+        LEFT JOIN buyers b ON br.buyer_id = b.id
+        WHERE br.product_id = %s
+        ORDER BY br.created_at DESC
         LIMIT %s OFFSET %s
         """
         return Review.execute_query(query, (product_id, limit, offset), fetch_all=True)
     
     @staticmethod
     def approve_review(review_id):
-        """Approve review"""
-        query = "UPDATE reviews SET is_approved = TRUE WHERE id = %s"
-        return Review.execute_query(query, (review_id,)) > 0
+        """Approve review — no-op since buyer_reviews doesn't have is_approved"""
+        return True
 
 # ============================================================================
 # MESSAGE MODEL
@@ -642,8 +659,7 @@ class Message(BaseModel):
     def get_conversation_messages(conversation_id, limit=50, offset=0):
         """Get messages in conversation"""
         query = """
-        SELECT m.*, us.first_name as sender_first_name, us.last_name as sender_last_name,
-               ur.first_name as receiver_first_name, ur.last_name as receiver_last_name
+        SELECT m.*
         FROM messages m
         WHERE m.conversation_id = %s
         ORDER BY m.created_at DESC
@@ -701,7 +717,7 @@ class OTP(BaseModel):
         """Create OTP"""
         expires_at = datetime.now() + timedelta(minutes=10)
         query = """
-        INSERT INTO otp_verification (email, phone, otp, purpose, expires_at)
+        INSERT INTO otps (email, phone, otp, purpose, expires_at)
         VALUES (%s, %s, %s, %s, %s)
         """
         return OTP.execute_insert(query, (email, phone, otp_code, purpose, expires_at))
@@ -711,14 +727,14 @@ class OTP(BaseModel):
         """Verify OTP"""
         if email:
             query = """
-            SELECT * FROM otp_verification 
+            SELECT * FROM otps 
             WHERE email = %s AND otp = %s AND expires_at > NOW() AND is_verified = FALSE
             ORDER BY created_at DESC LIMIT 1
             """
             return OTP.execute_query(query, (email, otp_code), fetch_one=True)
         else:
             query = """
-            SELECT * FROM otp_verification 
+            SELECT * FROM otps 
             WHERE phone = %s AND otp = %s AND expires_at > NOW() AND is_verified = FALSE
             ORDER BY created_at DESC LIMIT 1
             """
@@ -728,8 +744,8 @@ class OTP(BaseModel):
     def mark_verified(otp_id):
         """Mark OTP as verified"""
         query = """
-        UPDATE otp_verification 
-        SET is_verified = TRUE, verified_at = CURRENT_TIMESTAMP 
+        UPDATE otps 
+        SET is_verified = TRUE 
         WHERE id = %s
         """
         return OTP.execute_query(query, (otp_id,)) > 0
@@ -737,7 +753,7 @@ class OTP(BaseModel):
     @staticmethod
     def increment_attempts(otp_id):
         """Increment OTP attempts"""
-        query = "UPDATE otp_verification SET attempts = attempts + 1 WHERE id = %s"
+        query = "UPDATE otps SET attempts = attempts + 1 WHERE id = %s"
         return OTP.execute_query(query, (otp_id,)) > 0
 
 # ============================================================================
@@ -749,37 +765,35 @@ class Cart(BaseModel):
     @staticmethod
     def create(buyer_id):
         """Create cart for buyer"""
-        query = "INSERT INTO carts (buyer_id) VALUES (%s)"
+        query = "INSERT INTO cart (buyer_id, product_id, quantity) VALUES (%s, 0, 0)"
         return Cart.execute_insert(query, (buyer_id,))
     
     @staticmethod
     def get_or_create(buyer_id):
-        """Get cart for buyer or create if not exists"""
-        query = "SELECT * FROM carts WHERE buyer_id = %s"
-        cart = Cart.execute_query(query, (buyer_id,), fetch_one=True)
-        if cart:
-            return cart
-        cart_id = Cart.execute_insert("INSERT INTO carts (buyer_id) VALUES (%s)", (buyer_id,))
-        return Cart.execute_query("SELECT * FROM carts WHERE id = %s", (cart_id,), fetch_one=True)
+        """Get cart items for buyer"""
+        query = "SELECT * FROM cart WHERE buyer_id = %s AND is_active = TRUE"
+        return Cart.execute_query(query, (buyer_id,), fetch_all=True) or []
     
     @staticmethod
     def add_item(cart_id, product_id, quantity=1):
-        """Add item to cart"""
+        """Add item to cart (cart_id is actually buyer_id here)"""
+        # Use ON CONFLICT for PostgreSQL upsert
         query = """
-        INSERT INTO cart_items (cart_id, product_id, quantity)
+        INSERT INTO cart (buyer_id, product_id, quantity)
         VALUES (%s, %s, %s)
-        ON DUPLICATE KEY UPDATE quantity = quantity + %s
+        ON CONFLICT (buyer_id, product_id) 
+        DO UPDATE SET quantity = cart.quantity + EXCLUDED.quantity
         """
-        return Cart.execute_insert(query, (cart_id, product_id, quantity, quantity))
+        return Cart.execute_insert(query, (cart_id, product_id, quantity))
     
     @staticmethod
     def get_items(cart_id, limit=100):
         """Get cart items"""
         query = """
-        SELECT ci.*, p.name, p.price, p.images, p.farmer_id
-        FROM cart_items ci
-        LEFT JOIN products p ON ci.product_id = p.id
-        WHERE ci.cart_id = %s
+        SELECT c.*, p.name, p.price, p.images, p.farmer_id
+        FROM cart c
+        LEFT JOIN products p ON c.product_id = p.id
+        WHERE c.buyer_id = %s AND c.is_active = TRUE
         LIMIT %s
         """
         return Cart.execute_query(query, (cart_id, limit), fetch_all=True)
@@ -787,13 +801,13 @@ class Cart(BaseModel):
     @staticmethod
     def remove_item(cart_item_id):
         """Remove item from cart"""
-        query = "DELETE FROM cart_items WHERE id = %s"
+        query = "DELETE FROM cart WHERE id = %s"
         return Cart.execute_query(query, (cart_item_id,)) > 0
     
     @staticmethod
     def clear_cart(cart_id):
-        """Clear all items from cart"""
-        query = "DELETE FROM cart_items WHERE cart_id = %s"
+        """Clear all items from cart (cart_id = buyer_id)"""
+        query = "DELETE FROM cart WHERE buyer_id = %s"
         return Cart.execute_query(query, (cart_id,)) > 0
 
 # ============================================================================
@@ -805,13 +819,13 @@ class Wallet(BaseModel):
     @staticmethod
     def create(user_id):
         """Create wallet for user"""
-        query = "INSERT INTO wallet (user_id, balance) VALUES (%s, 0)"
+        query = "INSERT INTO wallet (farmer_id, balance) VALUES (%s, 0)"
         return Wallet.execute_insert(query, (user_id,))
     
     @staticmethod
     def get(user_id):
         """Get wallet"""
-        query = "SELECT * FROM wallet WHERE user_id = %s"
+        query = "SELECT * FROM wallet WHERE farmer_id = %s"
         return Wallet.execute_query(query, (user_id,), fetch_one=True)
     
     @staticmethod
@@ -819,8 +833,8 @@ class Wallet(BaseModel):
         """Add balance to wallet"""
         query = """
         UPDATE wallet 
-        SET balance = balance + %s, total_earned = total_earned + %s
-        WHERE user_id = %s
+        SET balance = balance + %s, total_earnings = total_earnings + %s
+        WHERE farmer_id = %s
         """
         return Wallet.execute_query(query, (amount, amount, user_id)) > 0
     
@@ -830,7 +844,7 @@ class Wallet(BaseModel):
         query = """
         UPDATE wallet 
         SET balance = balance - %s
-        WHERE user_id = %s AND balance >= %s
+        WHERE farmer_id = %s AND balance >= %s
         """
         return Wallet.execute_query(query, (amount, user_id, amount)) > 0
 
@@ -880,10 +894,12 @@ class Transaction(BaseModel):
         query = """
         INSERT INTO wallet (farmer_id, balance, total_earnings)
         VALUES (%s, %s, %s)
-        ON DUPLICATE KEY UPDATE balance = balance + %s, total_earnings = total_earnings + %s
+        ON CONFLICT (farmer_id) 
+        DO UPDATE SET balance = wallet.balance + EXCLUDED.balance, 
+                      total_earnings = wallet.total_earnings + EXCLUDED.total_earnings
         """
         try:
-            return Transaction.execute_query(query, (user_id, amount, amount, amount, amount))
+            return Transaction.execute_query(query, (user_id, amount, amount))
         except Exception:
             return None
     
@@ -892,4 +908,3 @@ class Transaction(BaseModel):
         """Get transactions for user"""
         query = "SELECT * FROM payments WHERE buyer_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s"
         return Transaction.execute_query(query, (user_id, limit, offset), fetch_all=True) or []
-

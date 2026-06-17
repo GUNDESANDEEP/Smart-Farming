@@ -1,14 +1,17 @@
 """
 Smart Farmer Marketplace - Flask Backend
-Single entry point. 5 consolidated blueprints.
+Platform: Render.com + Neon PostgreSQL + Redis Cloud
+Single entry point. Consolidated blueprints.
 """
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
-from flask_mysqldb import MySQL
 from dotenv import load_dotenv
 import os
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 from datetime import timedelta
 
 load_dotenv()
@@ -16,14 +19,62 @@ load_dotenv()
 app = Flask(__name__)
 
 # ============================================================================
-# DATABASE CONFIG
+# DATABASE CONFIG (Neon PostgreSQL)
 # ============================================================================
-app.config['MYSQL_HOST'] = os.getenv('MYSQL_HOST', 'localhost')
-app.config['MYSQL_USER'] = os.getenv('MYSQL_USER', 'root')
-app.config['MYSQL_PASSWORD'] = os.getenv('MYSQL_PASSWORD', '')
-app.config['MYSQL_DB'] = os.getenv('MYSQL_DB', 'SmartFarmingDB')
-app.config['MYSQL_CHARSET'] = 'utf8mb4'
-app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
+DATABASE_URL = os.getenv('DATABASE_URL', '')
+
+# Build DATABASE_URL from individual vars if not provided
+if not DATABASE_URL:
+    db_host = os.getenv('DB_HOST', 'localhost')
+    db_port = os.getenv('DB_PORT', '5432')
+    db_user = os.getenv('DB_USER', 'postgres')
+    db_password = os.getenv('DB_PASSWORD', '')
+    db_name = os.getenv('DB_NAME', 'smartfarmingdb')
+    DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+    if db_host and 'neon.tech' in db_host:
+        DATABASE_URL += "?sslmode=require"
+
+# Connection Pool
+try:
+    db_pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dsn=DATABASE_URL
+    )
+    print(f"[OK] PostgreSQL connection pool created (Neon)")
+except Exception as e:
+    print(f"[ERR] PostgreSQL pool creation failed: {e}")
+    db_pool = None
+
+app.config['DATABASE_URL'] = DATABASE_URL
+
+# ============================================================================
+# REDIS CONFIG (Redis Cloud)
+# ============================================================================
+redis_client = None
+try:
+    import redis as redis_lib
+    redis_url = os.getenv('REDIS_URL', '')
+    if redis_url:
+        redis_client = redis_lib.from_url(redis_url, decode_responses=True)
+        redis_client.ping()
+        print(f"[OK] Redis Cloud connected")
+    else:
+        redis_host = os.getenv('REDIS_HOST', 'localhost')
+        redis_port = int(os.getenv('REDIS_PORT', 6379))
+        redis_password = os.getenv('REDIS_PASSWORD', '')
+        redis_client = redis_lib.Redis(
+            host=redis_host, port=redis_port,
+            password=redis_password if redis_password else None,
+            decode_responses=True
+        )
+        redis_client.ping()
+        print(f"[OK] Redis connected ({redis_host}:{redis_port})")
+except Exception as e:
+    print(f"[WARN] Redis not available: {e} - caching disabled")
+    redis_client = None
+
+app.config['REDIS_CLIENT'] = redis_client
 
 # ============================================================================
 # JWT CONFIG
@@ -36,22 +87,56 @@ app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 # ============================================================================
 # INIT EXTENSIONS
 # ============================================================================
-mysql = MySQL(app)
 jwt = JWTManager(app)
-CORS(app, resources={r"/api/*": {
-    "origins": [
-        os.getenv('FRONTEND_URL', 'http://localhost:3000'),
+
+# CORS - Only allow known origins in production
+cors_origins = os.getenv('CORS_ORIGINS', '*')
+if cors_origins == '*':
+    allowed_origins = ["*"]
+else:
+    allowed_origins = [o.strip() for o in cors_origins.split(',')]
+    allowed_origins.extend([
         "http://localhost:3000",
-        "https://smart-farming-marketplace.vercel.app",
-        "*"
-    ],
+        os.getenv('FRONTEND_URL', 'http://localhost:3000'),
+    ])
+
+CORS(app, resources={r"/api/*": {
+    "origins": allowed_origins,
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "allow_headers": ["Content-Type", "Authorization"]
 }})
 
-# Pass MySQL to models
-from models.models import set_mysql_instance
-set_mysql_instance(mysql)
+# Pass DB pool to models
+from models.models import set_db_pool
+set_db_pool(db_pool)
+
+# ============================================================================
+# RATE LIMITING
+# ============================================================================
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+
+    if redis_client:
+        limiter = Limiter(
+            get_remote_address,
+            app=app,
+            storage_uri=os.getenv('REDIS_URL', 'memory://'),
+            default_limits=["200 per day", "50 per hour"]
+        )
+    else:
+        limiter = Limiter(
+            get_remote_address,
+            app=app,
+            storage_uri="memory://",
+            default_limits=["200 per day", "50 per hour"]
+        )
+    print("[OK] Rate limiting enabled")
+except ImportError:
+    limiter = None
+    print("[SKIP] flask-limiter not installed")
+
+app.config['LIMITER'] = limiter
 
 # ============================================================================
 # CLOUDINARY CONFIG
@@ -252,6 +337,8 @@ def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     return response
 
 # ============================================================================
@@ -261,19 +348,42 @@ def add_security_headers(response):
 @app.route('/health', methods=['GET'])
 @app.route('/api/health', methods=['GET'])
 def health_check():
+    health = {'status': 'healthy'}
+    
+    # Check PostgreSQL
     try:
-        cursor = mysql.connection.cursor()
-        cursor.execute("SELECT 1")
-        cursor.close()
-        return jsonify({'status': 'healthy', 'database': 'connected'}), 200
+        if db_pool:
+            conn = db_pool.getconn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            db_pool.putconn(conn)
+            health['database'] = 'connected'
+        else:
+            health['database'] = 'no pool'
     except Exception as e:
-        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+        health['database'] = f'error: {str(e)}'
+        health['status'] = 'degraded'
+    
+    # Check Redis
+    try:
+        if redis_client:
+            redis_client.ping()
+            health['cache'] = 'connected'
+        else:
+            health['cache'] = 'disabled'
+    except Exception as e:
+        health['cache'] = f'error: {str(e)}'
+    
+    status_code = 200 if health['status'] == 'healthy' else 500
+    return jsonify(health), status_code
 
 @app.route('/api', methods=['GET'])
 def api_info():
     return jsonify({
         'name': 'Smart Farmer Marketplace API',
         'version': '2.0.0',
+        'platform': 'Render.com + Neon PostgreSQL + Redis Cloud',
         'blueprints': blueprints_registered,
         'endpoints': {
             'auth': '/api/auth',
@@ -287,8 +397,6 @@ def api_info():
             'upload': '/api/upload'
         }
     }), 200
-
-# Weather API is now handled by weather_bp blueprint (/api/weather)
 
 # ============================================================================
 # IMAGE UPLOAD (Cloudinary)
@@ -330,8 +438,10 @@ if __name__ == '__main__':
     print(f"""
     ============================================
     Smart Farmer Marketplace v2.0
+    Platform: Render.com + Neon PostgreSQL
     ============================================
-    Database: {app.config['MYSQL_DB']}
+    Database: Neon PostgreSQL
+    Cache: {'Redis Cloud' if redis_client else 'Disabled'}
     Port: {port}
     Blueprints: {len(blueprints_registered)}
     """)
