@@ -1,5 +1,7 @@
 """
 Email Service - Send Emails for Notifications, OTP, and Password Reset
+SMTP Authentication is MANDATORY - the app will refuse to start without valid SMTP credentials.
+Uses port 587 with STARTTLS for secure email delivery.
 """
 
 import smtplib
@@ -7,17 +9,55 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import os
+import sys
 from datetime import datetime
 
 load_dotenv()
 
 class EmailService:
-    """Handle sending emails via SMTP"""
+    """Handle sending emails via SMTP - Authentication is MANDATORY"""
     
-    SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    SMTP_SERVER = os.getenv('SMTP_HOST', os.getenv('SMTP_SERVER', 'smtp.gmail.com'))
     SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
-    SENDER_EMAIL = os.getenv('SMTP_EMAIL')
-    SENDER_PASSWORD = os.getenv('SMTP_PASSWORD')
+    SENDER_EMAIL = os.getenv('EMAIL_SENDER', os.getenv('SMTP_EMAIL'))
+    SENDER_PASSWORD = os.getenv('EMAIL_PASSWORD', os.getenv('SMTP_PASSWORD'))
+    
+    @classmethod
+    def validate_smtp_config(cls):
+        """
+        Validate that all required SMTP credentials are configured.
+        Raises RuntimeError if any are missing - SMTP is mandatory.
+        """
+        missing = []
+        if not cls.SENDER_EMAIL:
+            missing.append('EMAIL_SENDER (or SMTP_EMAIL)')
+        if not cls.SENDER_PASSWORD:
+            missing.append('EMAIL_PASSWORD (or SMTP_PASSWORD)')
+        if not cls.SMTP_SERVER:
+            missing.append('SMTP_HOST (or SMTP_SERVER)')
+        
+        if missing:
+            error_msg = (
+                f"\n{'='*60}\n"
+                f"  ❌ SMTP AUTHENTICATION ERROR - MANDATORY\n"
+                f"{'='*60}\n"
+                f"  The following SMTP environment variables are MISSING:\n"
+                f"  {', '.join(missing)}\n\n"
+                f"  SMTP authentication is MANDATORY for this application.\n"
+                f"  Email features (OTP, password reset, notifications)\n"
+                f"  will NOT work without proper SMTP configuration.\n\n"
+                f"  Required .env variables:\n"
+                f"    SMTP_HOST=smtp.gmail.com\n"
+                f"    SMTP_PORT=587\n"
+                f"    EMAIL_SENDER=your-email@gmail.com\n"
+                f"    EMAIL_PASSWORD=your-app-password\n"
+                f"{'='*60}\n"
+            )
+            print(error_msg, file=sys.stderr)
+            raise RuntimeError(f"SMTP configuration incomplete: missing {', '.join(missing)}")
+        
+        print(f"[OK] SMTP Authentication configured: {cls.SENDER_EMAIL} via {cls.SMTP_SERVER}:{cls.SMTP_PORT}")
+        return True
     
     @staticmethod
     def send_otp_email(recipient_email, otp_code, user_name):
@@ -240,7 +280,14 @@ class EmailService:
     
     @staticmethod
     def _send_email(recipient_email, subject, html_body):
-        """Internal method to send email via SMTP"""
+        """Internal method to send email via SMTP - Uses port 587 STARTTLS"""
+        # Pre-check: SMTP credentials MUST be configured
+        if not EmailService.SENDER_EMAIL or not EmailService.SENDER_PASSWORD:
+            raise RuntimeError(
+                "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
+                "Email sending is mandatory and cannot be skipped."
+            )
+        
         try:
             # Create email message
             message = MIMEMultipart("alternative")
@@ -252,23 +299,35 @@ class EmailService:
             part = MIMEText(html_body, "html")
             message.attach(part)
             
-            # Connect to SMTP server and send
-            with smtplib.SMTP(EmailService.SMTP_SERVER, EmailService.SMTP_PORT) as server:
-                server.starttls()
-                server.login(EmailService.SENDER_EMAIL, EmailService.SENDER_PASSWORD)
-                server.sendmail(EmailService.SENDER_EMAIL, recipient_email, message.as_string())
+            # Connect to SMTP server via STARTTLS (port 587)
+            server = smtplib.SMTP(EmailService.SMTP_SERVER, EmailService.SMTP_PORT, timeout=15)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(EmailService.SENDER_EMAIL, EmailService.SENDER_PASSWORD)
+            server.sendmail(EmailService.SENDER_EMAIL, recipient_email, message.as_string())
+            server.quit()
             
-            print(f"Email sent successfully to {recipient_email}")
+            print(f"✅ Email sent successfully to {recipient_email} (STARTTLS port 587)")
             return True
         
-        except smtplib.SMTPAuthenticationError:
-            print("SMTP Authentication failed. Check your email and password.")
-            return False
+        except smtplib.SMTPAuthenticationError as e:
+            error_msg = (
+                f"❌ SMTP Authentication FAILED for {EmailService.SENDER_EMAIL}. "
+                f"Check your EMAIL_SENDER and EMAIL_PASSWORD in .env. "
+                f"If using Gmail, ensure you're using an App Password. Error: {e}"
+            )
+            print(error_msg)
+            raise RuntimeError(error_msg)
         
         except smtplib.SMTPException as e:
-            print(f"SMTP error: {e}")
+            print(f"❌ SMTP error sending to {recipient_email}: {e}")
             return False
         
         except Exception as e:
-            print(f"Error sending email: {e}")
+            print(f"❌ Error sending email to {recipient_email}: {e}")
             return False
+
+
+# Validate SMTP at module load time - app will fail to start without valid SMTP config
+EmailService.validate_smtp_config()

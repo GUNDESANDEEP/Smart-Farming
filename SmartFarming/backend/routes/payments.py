@@ -104,31 +104,45 @@ def _serialize_row(row):
 
 
 def _send_email(to_email, subject, body_html):
-    """Send email via SMTP (same pattern as auth.py)."""
-    try:
-        sender_email = os.getenv('EMAIL_SENDER')
-        sender_password = os.getenv('EMAIL_PASSWORD')
-        if not sender_email or not sender_password:
-            print("Email credentials not configured")
-            return False
+    """Send email via SMTP - SMTP authentication is MANDATORY. Uses STARTTLS port 587."""
+    sender_email = os.getenv('EMAIL_SENDER')
+    sender_password = os.getenv('EMAIL_PASSWORD')
+    
+    if not sender_email or not sender_password:
+        raise RuntimeError(
+            "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
+            "Email sending is mandatory and cannot be skipped."
+        )
 
+    try:
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = to_email
         msg['Subject'] = subject
         msg.attach(MIMEText(body_html, 'html'))
 
-        server = smtplib.SMTP(
-            os.getenv('SMTP_HOST', 'smtp.gmail.com'),
-            int(os.getenv('SMTP_PORT', '587'))
-        )
+        smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', '587'))
+        
+        # Use SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+        server.ehlo()
         server.starttls()
+        server.ehlo()
         server.login(sender_email, sender_password)
         server.send_message(msg)
         server.quit()
+        print(f"✅ Email sent to {to_email} (STARTTLS port 587)")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        error_msg = (
+            f"❌ SMTP Authentication FAILED for {sender_email}. "
+            f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
+        )
+        print(error_msg)
+        raise RuntimeError(error_msg)
     except Exception as e:
-        print(f"Email error (payments): {e}")
+        print(f"❌ Email error (payments): {e}")
         return False
 
 

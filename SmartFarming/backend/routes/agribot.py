@@ -214,8 +214,11 @@ def chat():
         return jsonify({'success': True, 'reply': reply}), 200
     except Exception as e:
         print(f'AgriBot chat error: {e}')
+        import traceback; traceback.print_exc()
         # Even on error, return offline response
-        reply = get_offline_response(message if 'message' in dir() else 'hello', 'en')
+        user_msg = locals().get('message', 'hello')
+        user_lang = locals().get('lang', 'en')
+        reply = get_offline_response(user_msg if user_msg else 'hello', user_lang if user_lang else 'en')
         return jsonify({'success': True, 'reply': reply}), 200
 
 

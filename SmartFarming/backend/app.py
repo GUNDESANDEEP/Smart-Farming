@@ -85,17 +85,33 @@ except ImportError:
     print("[SKIP] twilio not installed")
 
 # ============================================================================
-# EMAIL (SMTP) CONFIG
+# EMAIL (SMTP) CONFIG - MANDATORY
 # ============================================================================
 app.config['SMTP_HOST'] = os.getenv('SMTP_HOST', 'smtp.gmail.com')
 app.config['SMTP_PORT'] = int(os.getenv('SMTP_PORT', 587))
 app.config['EMAIL_SENDER'] = os.getenv('EMAIL_SENDER')
 app.config['EMAIL_PASSWORD'] = os.getenv('EMAIL_PASSWORD')
 app.config['EMAIL_FROM_NAME'] = os.getenv('EMAIL_FROM_NAME', 'SmartFarming')
+
 if app.config['EMAIL_SENDER'] and app.config['EMAIL_PASSWORD']:
-    print("[OK] Email SMTP configured")
+    print(f"[OK] Email SMTP configured (MANDATORY) - Sender: {app.config['EMAIL_SENDER']}")
 else:
-    print("[SKIP] Email credentials not set")
+    missing = []
+    if not app.config['EMAIL_SENDER']:
+        missing.append('EMAIL_SENDER')
+    if not app.config['EMAIL_PASSWORD']:
+        missing.append('EMAIL_PASSWORD')
+    error_msg = (
+        f"\n{'='*60}\n"
+        f"  ❌ FATAL: SMTP AUTHENTICATION IS MANDATORY\n"
+        f"{'='*60}\n"
+        f"  Missing: {', '.join(missing)}\n"
+        f"  The application cannot start without SMTP credentials.\n"
+        f"  Please set EMAIL_SENDER and EMAIL_PASSWORD in your .env file.\n"
+        f"{'='*60}\n"
+    )
+    print(error_msg)
+    raise RuntimeError(f"SMTP configuration is mandatory. Missing: {', '.join(missing)}")
 
 # ============================================================================
 # WEATHER API CONFIG

@@ -192,15 +192,19 @@ TABLES = [
     CREATE TABLE IF NOT EXISTS payments (
         id INT PRIMARY KEY AUTO_INCREMENT,
         payment_id INT UNIQUE,
-        order_id INT NOT NULL,
+        order_id INT DEFAULT NULL,
         buyer_id INT,
         amount DECIMAL(12,2) NOT NULL,
         payment_method VARCHAR(50) DEFAULT 'razorpay',
         status ENUM('pending','completed','failed','refunded') DEFAULT 'pending',
         transaction_id VARCHAR(100),
+        razorpay_payment_id VARCHAR(100),
+        razorpay_order_id VARCHAR(100),
+        razorpay_signature VARCHAR(255),
+        error_message TEXT,
+        payment_date TIMESTAMP NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
         INDEX idx_order (order_id),
         INDEX idx_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -350,6 +354,101 @@ TABLES = [
         status ENUM('pending','reviewed','dismissed') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (review_id) REFERENCES buyer_reviews(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
+
+    # ==================== OTPs (for email/login OTP verification) ====================
+    """
+    CREATE TABLE IF NOT EXISTS otps (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        email VARCHAR(255),
+        phone VARCHAR(20),
+        otp VARCHAR(10) NOT NULL,
+        purpose VARCHAR(50) DEFAULT 'verification',
+        is_verified BOOLEAN DEFAULT FALSE,
+        attempts INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at DATETIME NOT NULL,
+        INDEX idx_email (email),
+        INDEX idx_phone (phone)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
+
+    # ==================== PAYMENT OTPs ====================
+    """
+    CREATE TABLE IF NOT EXISTS payment_otps (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        buyer_id INT,
+        buyer_phone VARCHAR(20),
+        buyer_email VARCHAR(255),
+        otp VARCHAR(10) NOT NULL,
+        amount DECIMAL(12,2),
+        product_details JSON,
+        farmer_id INT,
+        status ENUM('pending','verified','expired') DEFAULT 'pending',
+        verified_at TIMESTAMP NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at DATETIME NOT NULL,
+        INDEX idx_otp (otp),
+        INDEX idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
+
+    # ==================== RECEIPTS ====================
+    """
+    CREATE TABLE IF NOT EXISTS receipts (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        receipt_id VARCHAR(50) UNIQUE NOT NULL,
+        payment_id INT,
+        buyer_id INT,
+        farmer_id INT,
+        subtotal DECIMAL(12,2) DEFAULT 0,
+        discount DECIMAL(12,2) DEFAULT 0,
+        grand_total DECIMAL(12,2) DEFAULT 0,
+        payment_type VARCHAR(50),
+        payment_status VARCHAR(50) DEFAULT 'completed',
+        buyer_name VARCHAR(200),
+        buyer_phone VARCHAR(20),
+        buyer_email VARCHAR(255),
+        qr_code VARCHAR(500),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_receipt_id (receipt_id),
+        INDEX idx_farmer (farmer_id),
+        INDEX idx_buyer (buyer_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
+
+    # ==================== RECEIPT ITEMS ====================
+    """
+    CREATE TABLE IF NOT EXISTS receipt_items (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        receipt_id INT NOT NULL,
+        product_id INT,
+        product_name VARCHAR(255),
+        quantity_kg DECIMAL(12,2) DEFAULT 0,
+        price_per_kg DECIMAL(10,2) DEFAULT 0,
+        product_quality VARCHAR(50) DEFAULT 'Standard',
+        item_total DECIMAL(12,2) DEFAULT 0,
+        FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE,
+        INDEX idx_receipt (receipt_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
+
+    # ==================== TRANSACTIONS ====================
+    """
+    CREATE TABLE IF NOT EXISTS transactions (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        transaction_id VARCHAR(100) UNIQUE,
+        payment_id INT,
+        receipt_id INT,
+        user_id INT,
+        user_type VARCHAR(20),
+        type ENUM('credit','debit') NOT NULL,
+        amount DECIMAL(12,2) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_transaction_id (transaction_id),
+        INDEX idx_user (user_id, user_type)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
 ]

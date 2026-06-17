@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Email Configuration
 EMAIL_CONFIG = {
-    'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
+    'smtp_server': os.getenv('SMTP_HOST', os.getenv('SMTP_SERVER', 'smtp.gmail.com')),
     'smtp_port': int(os.getenv('SMTP_PORT', 587)),
     'sender_email': os.getenv('EMAIL_SENDER', 'noreply@smartfarming.com'),
     'sender_password': os.getenv('EMAIL_PASSWORD', ''),
@@ -35,7 +35,7 @@ def get_db_connection():
 
 def send_email(recipient_email: str, subject: str, body: str, html: Optional[str] = None) -> bool:
     """
-    Send email notification to recipient
+    Send email notification to recipient - SMTP authentication is MANDATORY
     
     Args:
         recipient_email: Email address
@@ -45,7 +45,17 @@ def send_email(recipient_email: str, subject: str, body: str, html: Optional[str
     
     Returns:
         bool: Success/failure
+    
+    Raises:
+        RuntimeError: If SMTP credentials are not configured or authentication fails
     """
+    # Pre-check: SMTP credentials MUST be configured
+    if not EMAIL_CONFIG['sender_email'] or not EMAIL_CONFIG['sender_password']:
+        raise RuntimeError(
+            "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
+            "Email sending is mandatory and cannot be skipped."
+        )
+    
     try:
         # Create message
         msg = MIMEMultipart('alternative')
@@ -60,16 +70,25 @@ def send_email(recipient_email: str, subject: str, body: str, html: Optional[str
         if html:
             msg.attach(MIMEText(html, 'html'))
 
-        # Send via SMTP
-        with smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'], timeout=5) as server:
+        # Send via SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
+        with smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'], timeout=15) as server:
+            server.ehlo()
             server.starttls()
+            server.ehlo()
             server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
             server.send_message(msg)
 
-        logger.info(f'Email sent to {recipient_email} - Subject: {subject}')
+        logger.info(f'✅ Email sent to {recipient_email} (STARTTLS port 587) - Subject: {subject}')
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        error_msg = (
+            f"❌ SMTP Authentication FAILED for {EMAIL_CONFIG['sender_email']}. "
+            f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
     except Exception as e:
-        logger.error(f'Failed to send email to {recipient_email}: {str(e)}')
+        logger.error(f'❌ Failed to send email to {recipient_email}: {str(e)}')
         return False
 
 

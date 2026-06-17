@@ -48,30 +48,46 @@ if FIREBASE_AVAILABLE:
 # ============================================================================
 
 def send_email(to_email, subject, message):
-    """Send email"""
+    """Send email - SMTP authentication is MANDATORY (uses STARTTLS port 587)"""
+    sender_email = os.getenv('EMAIL_SENDER')
+    sender_password = os.getenv('EMAIL_PASSWORD')
+    
+    if not sender_email or not sender_password:
+        raise RuntimeError(
+            "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
+            "Email sending is mandatory and cannot be skipped."
+        )
+    
     try:
-        sender_email = os.getenv('EMAIL_SENDER')
-        sender_password = os.getenv('EMAIL_PASSWORD')
-        
-        if not sender_email or not sender_password:
-            print("Email credentials not configured")
-            return False
-        
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = to_email
         msg['Subject'] = subject
         msg.attach(MIMEText(message, 'html'))
         
-        server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', '587')), timeout=5)
+        smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', '587'))
+        
+        # Use SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+        server.ehlo()
         server.starttls()
+        server.ehlo()
         server.login(sender_email, sender_password)
         server.send_message(msg)
         server.quit()
         
+        print(f"✅ Email sent to {to_email} (STARTTLS port 587)")
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        error_msg = (
+            f"❌ SMTP Authentication FAILED for {sender_email}. "
+            f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
+        )
+        print(error_msg)
+        raise RuntimeError(error_msg)
     except Exception as e:
-        print(f"Email error: {e}")
+        print(f"❌ Email error: {e}")
         return False
 
 def generate_otp():
@@ -303,11 +319,11 @@ def send_login_otp():
         email_sent = send_email(email, 'Login OTP - Smart Farmer Marketplace', email_body)
 
         if not email_sent:
-            # SMTP not configured - still allow login flow, OTP is stored in DB
-            print(f"[OTP] Email send failed but OTP stored. Email: {email}, OTP: {otp_code}")
-            return jsonify({'success': True, 'message': 'OTP sent', 'otp_for_testing': otp_code}), 200
+            # SMTP is mandatory - do NOT leak OTP or allow bypass
+            print(f"❌ [OTP] SMTP email send failed for {email}. OTP NOT delivered.")
+            return jsonify({'success': False, 'error': 'Failed to send OTP email. Please check SMTP configuration.'}), 500
 
-        return jsonify({'success': True, 'message': 'OTP sent'}), 200
+        return jsonify({'success': True, 'message': 'OTP sent to your email'}), 200
 
     except Exception as e:
         print(f"Send OTP error: {e}")
@@ -649,10 +665,16 @@ def forgot_password():
             (email, otp_code)
         )
         
-        # Send OTP via email using SMTP
+        # Send OTP via email using SMTP - MANDATORY
+        sender_email = os.getenv('EMAIL_SENDER')
+        sender_password = os.getenv('EMAIL_PASSWORD')
+        
+        if not sender_email or not sender_password:
+            return jsonify({'error': 'SMTP credentials not configured. Email sending is mandatory.'}), 500
+        
         try:
             msg = MIMEMultipart()
-            msg['From'] = os.getenv('EMAIL_SENDER', 'gundesandeep2005@gmail.com')
+            msg['From'] = sender_email
             msg['To'] = email
             msg['Subject'] = 'SmartFarm - Password Reset OTP'
             body = f'''<html><body style="font-family:Arial;text-align:center;">
@@ -663,15 +685,23 @@ def forgot_password():
             <p style="color:#888;">Valid for 10 minutes</p>
             </div></body></html>'''
             msg.attach(MIMEText(body, 'html'))
-            server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587)), timeout=5)
+            # Use SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
+            server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587)), timeout=15)
+            server.ehlo()
             server.starttls()
-            server.login(os.getenv('EMAIL_SENDER'), os.getenv('EMAIL_PASSWORD'))
+            server.ehlo()
+            server.login(sender_email, sender_password)
             server.send_message(msg)
             server.quit()
+            print(f"✅ Password reset OTP sent to {email} (STARTTLS port 587)")
+        except smtplib.SMTPAuthenticationError as e:
+            print(f'❌ SMTP Authentication FAILED: {e}')
+            return jsonify({'error': 'SMTP authentication failed. Check email credentials.'}), 500
         except Exception as e:
-            print(f'Email send error: {e}')
+            print(f'❌ Email send error: {e}')
+            return jsonify({'error': 'Failed to send OTP email'}), 500
         
-        return jsonify({'success': True, 'message': 'OTP sent to your email', 'otp_for_testing': otp_code}), 200
+        return jsonify({'success': True, 'message': 'OTP sent to your email'}), 200
     
     except Exception as e:
         print(f"Forgot password error: {e}")
