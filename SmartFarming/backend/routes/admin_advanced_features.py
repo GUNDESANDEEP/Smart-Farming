@@ -48,11 +48,13 @@ def send_email(recipient_email: str, subject: str, body: str, html: Optional[str
         )
     
     try:
+        from email.utils import formataddr
         # Create message
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
-        msg['From'] = EMAIL_CONFIG['sender_email']
+        msg['From'] = formataddr(('SmartFarm', EMAIL_CONFIG['sender_email']))
         msg['To'] = recipient_email
+        msg['Reply-To'] = EMAIL_CONFIG['sender_email']
 
         # Attach plain text
         msg.attach(MIMEText(body, 'plain'))

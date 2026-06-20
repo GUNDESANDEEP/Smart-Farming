@@ -1,14 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { FiMail, FiLock, FiPhone, FiArrowRight, FiUser, FiShield, FiEye, FiEyeOff } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { authAPI, tokenUtils } from '../services/api';
+import { authAPI, tokenUtils, getErrorMessage } from '../services/api';
 import useAuthStore from '../services/authStore';
 import '../styles/auth.css';
 
 const LoginPage = () => {
   const navigate = useNavigate();
-  const { login } = useAuthStore();
+  const { login, isAuthenticated, role } = useAuthStore();
   const [userType, setUserType] = useState('farmer');
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({ email: '', phone: '', password: '' });
@@ -24,51 +24,16 @@ const LoginPage = () => {
   const [forgotOtp, setForgotOtp] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [forgotLoading, setForgotLoading] = useState(false);
-  const cursorRef = useRef(null);
-  const trailsRef = useRef([]);
 
-  // Custom cursor trail effect
+  // Redirect if already logged in
   useEffect(() => {
-    const cursor = cursorRef.current;
-    let trails = [];
-    
-    const createTrail = (x, y) => {
-      const trail = document.createElement('div');
-      trail.className = 'cursor-trail';
-      trail.style.left = x + 'px';
-      trail.style.top = y + 'px';
-      document.body.appendChild(trail);
-      
-      setTimeout(() => {
-        trail.style.opacity = '0';
-        trail.style.transform = 'scale(0) rotate(180deg)';
-      }, 10);
-      
-      setTimeout(() => {
-        if (trail.parentNode) trail.parentNode.removeChild(trail);
-      }, 800);
-    };
+    if (isAuthenticated && role) {
+      const dashboardRoutes = { farmer: '/farmer', buyer: '/buyer', admin: '/admin' };
+      navigate(dashboardRoutes[role] || '/', { replace: true });
+    }
+  }, [isAuthenticated, role, navigate]);
 
-    let lastTime = 0;
-    const handleMouseMove = (e) => {
-      if (cursor) {
-        cursor.style.left = e.clientX + 'px';
-        cursor.style.top = e.clientY + 'px';
-      }
-      
-      const now = Date.now();
-      if (now - lastTime > 60) {
-        createTrail(e.clientX, e.clientY);
-        lastTime = now;
-      }
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      document.querySelectorAll('.cursor-trail').forEach(t => t.remove());
-    };
-  }, []);
+  // Cursor trail is handled by GlobalCursor component in App.js
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -95,7 +60,7 @@ const LoginPage = () => {
 
     tokenUtils.setTokens(token, refreshToken);
     localStorage.setItem('user', JSON.stringify(user));
-    login(user, token);
+    login(user, token, refreshToken);
 
     toast.success(`Welcome back, ${user.name}!`, { icon: '🌾' });
 
@@ -119,11 +84,28 @@ const LoginPage = () => {
 
       const data = response.data;
 
-      // All roles: complete login directly
-      completeLogin(data);
+      // Check if OTP verification is required
+      if (data.otp_required) {
+        setBuyerLoginData(data);
+        setOtpStep(2);
+        toast.success(`OTP sent to ${data.user?.email}`, { icon: '📧', duration: 5000 });
+      } else {
+        // Direct login (no email on account)
+        completeLogin(data);
+      }
     } catch (error) {
-      const msg = error.response?.data?.error || error.response?.data?.message || 'Login failed. Check your credentials.';
-      toast.error(msg);
+      // Don't show error toast for silent auth redirects
+      if (error._silentAuthRedirect) return;
+
+      const msg = getErrorMessage(error);
+      if (msg) {
+        // Choose icon based on error type
+        const icon = error._isNetworkError ? '🔌'
+          : error._isTimeoutError ? '⏱️'
+          : error.response?.status === 503 ? '🔄'
+          : '❌';
+        toast.error(msg, { icon, duration: 6000 });
+      }
     } finally {
       setLoading(false);
     }
@@ -138,10 +120,10 @@ const LoginPage = () => {
     }
     setOtpLoading(true);
     try {
-      const res = await authAPI.verifyOTP(buyerLoginData.user.email, otp);
-      if (res.data.verified) {
-        toast.success('OTP verified!', { icon: '✅' });
-        completeLogin(buyerLoginData);
+      const res = await authAPI.completeLogin(buyerLoginData.user.email, otp, userType);
+      if (res.data.verified || res.data.access_token) {
+        toast.success('OTP verified! Logging in...', { icon: '✅' });
+        completeLogin(res.data);
       } else {
         toast.error('Invalid OTP. Please try again.');
       }
@@ -196,12 +178,9 @@ const LoginPage = () => {
 
   return (
     <div className="auth-page">
-      {/* Custom Cursor */}
-      <div ref={cursorRef} className="custom-cursor"></div>
-      
       {/* Animated Background Particles */}
       <div className="auth-particles">
-        {[...Array(6)].map((_, i) => (
+        {[...Array(3)].map((_, i) => (
           <div key={i} className={`particle p${i + 1}`}>🍃</div>
         ))}
       </div>
@@ -242,7 +221,7 @@ const LoginPage = () => {
           </div>
 
           {/* Buyer OTP Step */}
-          {userType === 'buyer' && otpStep === 2 ? (
+          {otpStep === 2 ? (
             <form onSubmit={handleVerifyOTP} className="auth-form">
               <p style={{ textAlign: 'center', color: '#d1fae5', marginBottom: '8px', fontSize: '14px' }}>
                 📧 OTP sent to <strong>{buyerLoginData?.user?.email}</strong>

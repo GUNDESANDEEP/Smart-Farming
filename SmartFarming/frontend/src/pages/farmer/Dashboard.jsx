@@ -4,6 +4,7 @@ import { useAuthStore } from '../../store/authStore';
 import { farmerAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import { FiPlus, FiShoppingCart, FiTrendingUp, FiUsers, FiLogOut } from 'react-icons/fi';
+import UltraAIBanner from '../../components/UltraAIBanner';
 
 export default function FarmerDashboard() {
   const navigate = useNavigate();
@@ -83,6 +84,9 @@ export default function FarmerDashboard() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+        {/* Ultra AI Coming Soon Banner */}
+        <UltraAIBanner />
+
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           {/* Total Products */}

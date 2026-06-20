@@ -104,7 +104,8 @@ def _serialize_row(row):
 
 
 def _send_email(to_email, subject, body_html):
-    """Send email via SMTP - SMTP authentication is MANDATORY. Uses STARTTLS port 587."""
+    """Send email via SMTP - SMTP authentication is MANDATORY. Uses STARTTLS port 587.
+    Anti-spam: uses display name, Reply-To, and text/plain fallback."""
     sender_email = os.getenv('EMAIL_SENDER')
     sender_password = os.getenv('EMAIL_PASSWORD')
     
@@ -115,11 +116,21 @@ def _send_email(to_email, subject, body_html):
         )
 
     try:
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
+        from email.utils import formataddr
+        import re
+        
+        msg = MIMEMultipart("alternative")
+        msg['From'] = formataddr(('SmartFarm', sender_email))
         msg['To'] = to_email
         msg['Subject'] = subject
-        msg.attach(MIMEText(body_html, 'html'))
+        msg['Reply-To'] = sender_email
+        
+        # Add plain text fallback (reduces spam score)
+        plain_text = re.sub(r'<[^>]+>', '', body_html).strip()
+        plain_text = re.sub(r'\s+', ' ', plain_text)
+        msg.attach(MIMEText(plain_text, 'plain', 'utf-8'))
+        # HTML version
+        msg.attach(MIMEText(body_html, 'html', 'utf-8'))
 
         smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', '587'))
@@ -132,17 +143,17 @@ def _send_email(to_email, subject, body_html):
         server.login(sender_email, sender_password)
         server.send_message(msg)
         server.quit()
-        print(f"✅ Email sent to {to_email} (STARTTLS port 587)")
+        print(f"[OK] Email sent to {to_email} (STARTTLS port 587)")
         return True
     except smtplib.SMTPAuthenticationError as e:
         error_msg = (
-            f"❌ SMTP Authentication FAILED for {sender_email}. "
+            f"[ERROR] SMTP Authentication FAILED for {sender_email}. "
             f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
         )
         print(error_msg)
         raise RuntimeError(error_msg)
     except Exception as e:
-        print(f"❌ Email error (payments): {e}")
+        print(f"[ERROR] Email error (payments): {e}")
         return False
 
 
@@ -306,11 +317,24 @@ def create_order():
 
         currency = data.get('currency', 'INR')
         receipt_id = data.get('receipt_id', _generate_receipt_id())
-        notes = data.get('notes', {})
+        raw_notes = data.get('notes', {})
+        delivery_address = data.get('delivery_address', '')
 
-        # Frontend already sends amount in paise (amount * 100)
+        # Razorpay requires 'notes' to be a dict/object, NOT a string
+        if isinstance(raw_notes, str):
+            notes = {'delivery_notes': raw_notes, 'delivery_address': delivery_address}
+        elif isinstance(raw_notes, dict):
+            notes = raw_notes
+            if delivery_address:
+                notes['delivery_address'] = delivery_address
+        else:
+            notes = {}
+
+        # Frontend sends amount in RUPEES. Razorpay needs PAISE (1 rupee = 100 paise)
+        amount_paise = int(float(amount) * 100)
+
         order_data = {
-            'amount': int(float(amount)),
+            'amount': amount_paise,
             'currency': currency,
             'receipt': receipt_id,
             'notes': notes,
@@ -321,7 +345,7 @@ def create_order():
         return jsonify({
             'success': True,
             'order_id': rz_order['id'],
-            'amount': amount,
+            'amount': amount_paise,
             'currency': currency,
             'key_id': os.getenv('RAZORPAY_KEY_ID'),
         }), 201
@@ -788,7 +812,7 @@ def send_receipt(receipt_id):
                     </p>
                 </div>
                 """
-                sent = _send_email(email_address, f'SmartFarming Receipt – {receipt_id}', email_html)
+                sent = _send_email(email_address, f'SmartFarming Receipt - {receipt_id}', email_html)
                 if sent:
                     print(f"[Email] Sent to {email_address}")
                 else:

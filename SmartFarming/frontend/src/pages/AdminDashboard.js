@@ -2,16 +2,17 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { FiUsers, FiPackage, FiTrendingUp, FiCheckCircle } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { adminAPI, buyerAPI } from '../services/api';
+import { adminAPI } from '../services/api';
 import '../styles/dashboard.css';
-import { getProductImage, PLACEHOLDER_IMG } from '../utils/productImages';
+import SmartProductImage from '../utils/SmartProductImage';
+import SaasDashboard from './admin/SaasDashboard';
 
 // ============================================================================
 // AdminUsers – User Management with Edit (suspend/activate) & Delete
 // ============================================================================
 const AdminUsers = () => {
   const [users, setUsers] = useState([]);
-  const [loadingId, setLoadingId] = useState(null);
+  const [loadingAction, setLoadingAction] = useState(null); // {id, role, action}
 
   useEffect(() => {
     fetchUsers();
@@ -29,13 +30,13 @@ const AdminUsers = () => {
               ...f,
               name: `${f.first_name || ''} ${f.last_name || ''}`.trim() || f.name || 'N/A',
               role: 'farmer',
-              status: f.status || 'active',
+              status: f.is_active === false ? 'suspended' : (f.status || 'active'),
             })),
             ...(data.buyers || []).map((b) => ({
               ...b,
               name: `${b.first_name || ''} ${b.last_name || ''}`.trim() || b.name || 'N/A',
               role: 'buyer',
-              status: b.status || 'active',
+              status: b.is_verified === false ? 'suspended' : (b.status || 'active'),
             })),
             ...(data.users || []),
           ];
@@ -45,9 +46,11 @@ const AdminUsers = () => {
     }
   };
 
+  const isSameUser = (a, b) => a.id === b.id && a.role === b.role;
+
   const handleToggleStatus = async (user) => {
     const action = user.status === 'suspended' ? 'activate' : 'suspend';
-    setLoadingId(user.id);
+    setLoadingAction({ id: user.id, role: user.role, action: 'toggle' });
     try {
       if (action === 'suspend') {
         await adminAPI.suspendUser(user.id, user.role);
@@ -59,7 +62,7 @@ const AdminUsers = () => {
       // Update local state so UI reflects the change immediately
       setUsers((prev) =>
         prev.map((u) =>
-          u.id === user.id
+          isSameUser(u, user)
             ? { ...u, status: action === 'suspend' ? 'suspended' : 'active' }
             : u
         )
@@ -67,28 +70,33 @@ const AdminUsers = () => {
     } catch (error) {
       toast.error(`Failed to ${action} user`);
     } finally {
-      setLoadingId(null);
+      setLoadingAction(null);
     }
   };
 
   const handleDelete = async (user) => {
     const confirmed = window.confirm(
-      `Are you sure you want to delete "${user.name || user.email}"? This action cannot be undone.`
+      `Are you sure you want to PERMANENTLY delete "${user.name || user.email}"?\n\nThis will remove the user and all their data from the database. This action CANNOT be undone.`
     );
     if (!confirmed) return;
 
-    setLoadingId(user.id);
+    setLoadingAction({ id: user.id, role: user.role, action: 'delete' });
     try {
-      // Use suspend as a soft-delete
-      await adminAPI.suspendUser(user.id, user.role);
-      toast.success(`${user.name || 'User'} has been removed`);
-      setUsers((prev) => prev.filter((u) => u.id !== user.id));
+      await adminAPI.deleteUser(user.id, user.role);
+      toast.success(`${user.name || 'User'} has been permanently deleted`);
+      setUsers((prev) => prev.filter((u) => !isSameUser(u, user)));
     } catch (error) {
-      toast.error('Failed to delete user');
+      const msg = error.response?.data?.error || 'Failed to delete user';
+      toast.error(msg);
     } finally {
-      setLoadingId(null);
+      setLoadingAction(null);
     }
   };
+
+  const isLoading = (userId, userRole, action) =>
+    loadingAction && loadingAction.id === userId && loadingAction.role === userRole && loadingAction.action === action;
+  const isAnyLoading = (userId, userRole) =>
+    loadingAction && loadingAction.id === userId && loadingAction.role === userRole;
 
   return (
     <div className="dashboard-section">
@@ -113,7 +121,7 @@ const AdminUsers = () => {
               </tr>
             )}
             {users.map((user) => (
-              <tr key={user.id}>
+              <tr key={`${user.role}-${user.id}`}>
                 <td>{user.name}</td>
                 <td>{user.email}</td>
                 <td>{user.role}</td>
@@ -123,10 +131,10 @@ const AdminUsers = () => {
                 <td>
                   <button
                     className="action-icon"
-                    disabled={loadingId === user.id}
+                    disabled={isAnyLoading(user.id, user.role)}
                     onClick={() => handleToggleStatus(user)}
                   >
-                    {loadingId === user.id
+                    {isLoading(user.id, user.role, 'toggle')
                       ? '...'
                       : user.status === 'suspended'
                       ? 'Activate'
@@ -134,10 +142,10 @@ const AdminUsers = () => {
                   </button>
                   <button
                     className="action-icon delete"
-                    disabled={loadingId === user.id}
+                    disabled={isAnyLoading(user.id, user.role)}
                     onClick={() => handleDelete(user)}
                   >
-                    Delete
+                    {isLoading(user.id, user.role, 'delete') ? '...' : 'Delete'}
                   </button>
                 </td>
               </tr>
@@ -220,7 +228,6 @@ const AdminProducts = () => {
         )}
         {products.map((product) => {
           const pStatus = product.approval_status || product.status || 'pending';
-          const imgSrc = getProductImage(product);
 
           return (
           <div key={product.id} style={{
@@ -234,15 +241,14 @@ const AdminProducts = () => {
           }}>
             {/* Product Header with Image */}
             <div style={{ display: 'flex', gap: '16px', padding: '16px 20px', alignItems: 'center' }}>
-              <img
-                src={imgSrc}
+              <SmartProductImage
+                product={product}
                 alt={product.name}
                 style={{
                   width: '72px', height: '72px', borderRadius: '14px',
                   objectFit: 'cover', border: '2px solid #dcfce7',
                   boxShadow: '0 2px 8px rgba(22,101,52,0.1)',
                 }}
-                onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=200&h=200&fit=crop'; }}
               />
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -640,6 +646,164 @@ const AdminReceipts = () => {
 };
 
 // ============================================================================
+// AdminRevenue – Platform Earnings Breakdown (GST + Platform Fee + Delivery Fee)
+// ============================================================================
+const AdminRevenue = () => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchEarnings();
+  }, []);
+
+  const fetchEarnings = async () => {
+    try {
+      const res = await adminAPI.getPlatformEarnings();
+      setData(res.data);
+    } catch (error) {
+      toast.error('Failed to load platform earnings');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) return <div style={{ textAlign: 'center', padding: '3rem', color: '#888' }}>Loading revenue data...</div>;
+  if (!data) return <div style={{ textAlign: 'center', padding: '3rem', color: '#888' }}>No revenue data available</div>;
+
+  const summary = data.summary || {};
+  const earnings = data.earnings || [];
+  const totalGST = parseFloat(summary.total_gst || 0);
+  const totalPlatformFee = parseFloat(summary.total_platform_fee || 0);
+  const totalFarmerPayout = parseFloat(summary.total_farmer_payout || 0);
+  const totalRevenue = parseFloat(summary.total_revenue || 0);
+  const adminTotal = totalGST + totalPlatformFee;
+
+  const cardStyle = (gradient) => ({
+    background: gradient, borderRadius: '16px', padding: '20px 24px',
+    color: '#fff', flex: '1 1 200px', minWidth: '180px',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.12)',
+  });
+
+  return (
+    <div className="dashboard-section">
+      <h2 style={{ color: '#14532d', marginBottom: '20px' }}>Platform Revenue & Earnings</h2>
+
+      {/* Summary Cards */}
+      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '24px' }}>
+        <div style={cardStyle('linear-gradient(135deg, #166534, #22c55e)')}>
+          <p style={{ margin: '0 0 4px', fontSize: '0.78rem', opacity: 0.8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total Revenue</p>
+          <h3 style={{ margin: 0, fontSize: '1.6rem' }}>Rs.{totalRevenue.toFixed(2)}</h3>
+          <p style={{ margin: '4px 0 0', fontSize: '0.72rem', opacity: 0.7 }}>{summary.total_orders || earnings.length} orders</p>
+        </div>
+
+        <div style={cardStyle('linear-gradient(135deg, #1d4ed8, #3b82f6)')}>
+          <p style={{ margin: '0 0 4px', fontSize: '0.78rem', opacity: 0.8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Admin Earnings</p>
+          <h3 style={{ margin: 0, fontSize: '1.6rem' }}>Rs.{adminTotal.toFixed(2)}</h3>
+          <p style={{ margin: '4px 0 0', fontSize: '0.72rem', opacity: 0.7 }}>GST + Platform Fee + Delivery</p>
+        </div>
+
+        <div style={cardStyle('linear-gradient(135deg, #7c3aed, #a855f7)')}>
+          <p style={{ margin: '0 0 4px', fontSize: '0.78rem', opacity: 0.8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Farmer Payouts</p>
+          <h3 style={{ margin: 0, fontSize: '1.6rem' }}>Rs.{totalFarmerPayout.toFixed(2)}</h3>
+          <p style={{ margin: '4px 0 0', fontSize: '0.72rem', opacity: 0.7 }}>97% of product price</p>
+        </div>
+      </div>
+
+      {/* Breakdown Cards */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+        gap: '12px', marginBottom: '24px',
+      }}>
+        <div style={{ background: '#f0fdf4', borderRadius: '12px', padding: '16px', border: '1px solid #bbf7d0', textAlign: 'center' }}>
+          <p style={{ margin: '0 0 4px', fontSize: '0.72rem', color: '#6b7280', textTransform: 'uppercase' }}>GST (1%)</p>
+          <p style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: '#166534' }}>Rs.{totalGST.toFixed(2)}</p>
+        </div>
+        <div style={{ background: '#eff6ff', borderRadius: '12px', padding: '16px', border: '1px solid #bfdbfe', textAlign: 'center' }}>
+          <p style={{ margin: '0 0 4px', fontSize: '0.72rem', color: '#6b7280', textTransform: 'uppercase' }}>Platform Fee (2%)</p>
+          <p style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: '#1d4ed8' }}>Rs.{(totalPlatformFee - totalGST > 0 ? totalPlatformFee - totalGST : totalPlatformFee).toFixed(2)}</p>
+        </div>
+        <div style={{ background: '#fef3c7', borderRadius: '12px', padding: '16px', border: '1px solid #fde68a', textAlign: 'center' }}>
+          <p style={{ margin: '0 0 4px', fontSize: '0.72rem', color: '#6b7280', textTransform: 'uppercase' }}>Delivery Fees</p>
+          <p style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: '#92400e' }}>Rs.{Math.max(0, totalRevenue - totalFarmerPayout - totalGST - (totalPlatformFee - totalGST > 0 ? totalPlatformFee - totalGST : 0)).toFixed(2)}</p>
+        </div>
+      </div>
+
+      {/* Per-Order Table */}
+      <h3 style={{ color: '#14532d', margin: '0 0 12px', fontSize: '1rem' }}>Order-wise Breakdown</h3>
+      <div style={{ overflowX: 'auto', borderRadius: '12px', boxShadow: '0 2px 12px rgba(22,101,52,0.08)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+          <thead>
+            <tr style={{ background: 'linear-gradient(135deg, #166534, #14532d)' }}>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'left', fontWeight: 600 }}>Order #</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'right', fontWeight: 600 }}>Total</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'right', fontWeight: 600 }}>GST (1%)</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'right', fontWeight: 600 }}>Platform (2%)</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'right', fontWeight: 600 }}>Delivery</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'right', fontWeight: 600 }}>Admin Total</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'right', fontWeight: 600 }}>Farmer Gets</th>
+              <th style={{ padding: '10px 12px', color: '#fff', textAlign: 'center', fontWeight: 600 }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {earnings.length === 0 ? (
+              <tr><td colSpan="8" style={{ textAlign: 'center', padding: '2rem', color: '#888' }}>No earnings yet</td></tr>
+            ) : earnings.map((e, i) => {
+              const orderTotal = parseFloat(e.total_amount || 0);
+              const gst = parseFloat(e.gst_amount || 0);
+              const pFee = parseFloat(e.platform_fee || 0);
+              const farmerPay = parseFloat(e.farmer_payout || 0);
+              // Delivery fee = platform_fee stored includes delivery, minus the actual 2% platform fee
+              const productTotal = farmerPay / 0.97; // reverse calculate product total
+              const actualPlatformFee = parseFloat((productTotal * 0.02).toFixed(2));
+              const deliveryFee = Math.max(0, parseFloat((pFee - actualPlatformFee).toFixed(2)));
+              const adminEarnings = parseFloat((gst + pFee).toFixed(2));
+
+              return (
+                <tr key={i} style={{
+                  background: i % 2 === 0 ? '#fff' : '#f0fdf4',
+                  borderBottom: '1px solid #e5e7eb',
+                }}>
+                  <td style={{ padding: '10px 12px', fontWeight: 600, color: '#166534' }}>
+                    {e.order_number || `#${e.order_id}`}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600 }}>
+                    Rs.{orderTotal.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#166534' }}>
+                    Rs.{gst.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#1d4ed8' }}>
+                    Rs.{actualPlatformFee.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#92400e' }}>
+                    Rs.{deliveryFee.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#1d4ed8' }}>
+                    Rs.{adminEarnings.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>
+                    Rs.{farmerPay.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                    <span style={{
+                      padding: '3px 10px', borderRadius: '12px', fontSize: '0.7rem', fontWeight: 600,
+                      background: e.settlement_status === 'settled' ? '#dcfce7' : '#fef3c7',
+                      color: e.settlement_status === 'settled' ? '#166534' : '#92400e',
+                    }}>
+                      {e.settlement_status || 'pending'}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
 // AdminDashboard – Main dashboard with stats & nested routes
 // ============================================================================
 const AdminDashboard = () => {
@@ -730,7 +894,7 @@ const AdminDashboard = () => {
                   </div>
                   <div className="stat-content">
                     <p>Total Revenue</p>
-                    <h3>₹{Number(stats.revenue).toLocaleString('en-IN')}</h3>
+                    <h3>Rs.{Number(stats.revenue).toLocaleString('en-IN')}</h3>
                   </div>
                 </div>
 
@@ -752,9 +916,12 @@ const AdminDashboard = () => {
         <Route path="orders" element={<AdminOrders />} />
         <Route path="activity" element={<AdminActivityFeed />} />
         <Route path="receipts" element={<AdminReceipts />} />
+        <Route path="revenue" element={<AdminRevenue />} />
+        <Route path="saas" element={<SaasDashboard />} />
       </Routes>
     </div>
   );
 };
 
 export default AdminDashboard;
+

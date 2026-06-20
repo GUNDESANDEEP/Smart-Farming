@@ -1,0 +1,715 @@
+/* ═══════════════════════════════════════════════════════════════
+   PRICING PLANS — LIQUID GLASS UI
+   Premium frosted glass aesthetic with animated gradients
+   ═══════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+/* ── Animated Gradient Mesh Background ── */
+.pricing-page {
+  min-height: 100vh;
+  font-family: 'Inter', sans-serif;
+  position: relative;
+  overflow-x: hidden;
+  background: #050d09;
+}
+
+.pricing-bg-mesh {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.pricing-bg-mesh::before {
+  content: '';
+  position: absolute;
+  width: 140%;
+  height: 140%;
+  top: -20%;
+  left: -20%;
+  background:
+    radial-gradient(ellipse 600px 600px at 20% 30%, rgba(16, 185, 129, 0.25) 0%, transparent 70%),
+    radial-gradient(ellipse 500px 500px at 75% 20%, rgba(5, 150, 105, 0.2) 0%, transparent 60%),
+    radial-gradient(ellipse 700px 700px at 50% 80%, rgba(52, 211, 153, 0.15) 0%, transparent 65%),
+    radial-gradient(ellipse 400px 400px at 85% 70%, rgba(6, 95, 70, 0.3) 0%, transparent 60%),
+    radial-gradient(ellipse 350px 350px at 10% 80%, rgba(4, 120, 87, 0.2) 0%, transparent 55%);
+  animation: meshFloat 20s ease-in-out infinite alternate;
+}
+
+@keyframes meshFloat {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  33% { transform: translate(20px, -30px) rotate(1deg); }
+  66% { transform: translate(-15px, 20px) rotate(-1deg); }
+  100% { transform: translate(10px, -10px) rotate(0.5deg); }
+}
+
+.pricing-bg-mesh::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle 2px at 15% 25%, rgba(52, 211, 153, 0.4) 0%, transparent 100%),
+    radial-gradient(circle 1.5px at 45% 15%, rgba(110, 231, 183, 0.3) 0%, transparent 100%),
+    radial-gradient(circle 2px at 70% 45%, rgba(16, 185, 129, 0.35) 0%, transparent 100%),
+    radial-gradient(circle 1px at 30% 70%, rgba(52, 211, 153, 0.25) 0%, transparent 100%),
+    radial-gradient(circle 1.5px at 85% 80%, rgba(110, 231, 183, 0.3) 0%, transparent 100%),
+    radial-gradient(circle 1px at 55% 60%, rgba(16, 185, 129, 0.2) 0%, transparent 100%);
+  animation: sparkle 4s ease-in-out infinite alternate;
+}
+
+@keyframes sparkle {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+/* ── Content Wrapper ── */
+.pricing-content {
+  position: relative;
+  z-index: 1;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+}
+
+/* ── Page Header ── */
+.pricing-header {
+  text-align: center;
+  margin-bottom: 3rem;
+  animation: fadeSlideUp 0.8s ease-out;
+}
+
+.pricing-header .back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(167, 243, 208, 0.8);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  margin-bottom: 1.5rem;
+  cursor: pointer;
+  background: none;
+  border: none;
+  transition: color 0.3s;
+}
+
+.pricing-header .back-btn:hover {
+  color: #6ee7b7;
+}
+
+.pricing-header .leaf-icon {
+  font-size: 2.5rem;
+  display: block;
+  margin: 0 auto 0.75rem;
+  animation: leafFloat 3s ease-in-out infinite;
+}
+
+@keyframes leafFloat {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-8px) rotate(5deg); }
+}
+
+.pricing-header h1 {
+  font-size: clamp(2rem, 5vw, 3rem);
+  font-weight: 900;
+  background: linear-gradient(135deg, #6ee7b7 0%, #34d399 30%, #10b981 60%, #059669 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.75rem;
+  letter-spacing: -0.02em;
+}
+
+.pricing-header p {
+  color: rgba(167, 243, 208, 0.6);
+  font-size: 1.1rem;
+  max-width: 500px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* ── Tab Switcher ── */
+.pricing-tab-switcher {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 3rem;
+  animation: fadeSlideUp 0.8s ease-out 0.15s both;
+}
+
+.tab-container {
+  display: flex;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 16px;
+  padding: 5px;
+  border: 1px solid rgba(110, 231, 183, 0.12);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+}
+
+.tab-btn {
+  padding: 12px 32px;
+  border: none;
+  background: transparent;
+  color: rgba(167, 243, 208, 0.5);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 12px;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  color: rgba(167, 243, 208, 0.8);
+}
+
+.tab-btn.active {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), rgba(5, 150, 105, 0.25));
+  color: #6ee7b7;
+  box-shadow:
+    0 4px 16px rgba(16, 185, 129, 0.2),
+    inset 0 1px 0 rgba(110, 231, 183, 0.15);
+  border: 1px solid rgba(110, 231, 183, 0.2);
+}
+
+/* ── Plans Grid ── */
+.plans-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  max-width: 920px;
+  margin: 0 auto 3.5rem;
+  align-items: start;
+  animation: fadeSlideUp 0.8s ease-out 0.3s both;
+}
+
+/* ── Glass Card Base ── */
+.plan-card {
+  border-radius: 24px;
+  padding: 2.5rem 2rem;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.plan-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 24px;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(110, 231, 183, 0.2) 0%,
+    rgba(16, 185, 129, 0.05) 50%,
+    rgba(110, 231, 183, 0.15) 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.plan-card:hover {
+  transform: translateY(-6px);
+}
+
+/* ── Free Plan Card ── */
+.plan-card.free {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+.plan-card.free:hover {
+  box-shadow:
+    0 12px 48px rgba(0, 0, 0, 0.2),
+    0 0 0 1px rgba(110, 231, 183, 0.15);
+}
+
+/* ── Premium Plan Card ── */
+.plan-card.premium {
+  background: rgba(16, 185, 129, 0.08);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow:
+    0 8px 32px rgba(16, 185, 129, 0.15),
+    0 0 80px rgba(16, 185, 129, 0.05);
+  border: 1px solid rgba(110, 231, 183, 0.15);
+}
+
+.plan-card.premium::before {
+  background: linear-gradient(
+    135deg,
+    rgba(110, 231, 183, 0.4) 0%,
+    rgba(16, 185, 129, 0.1) 40%,
+    rgba(52, 211, 153, 0.3) 100%
+  );
+}
+
+.plan-card.premium:hover {
+  box-shadow:
+    0 16px 64px rgba(16, 185, 129, 0.25),
+    0 0 100px rgba(16, 185, 129, 0.08),
+    0 0 0 1px rgba(110, 231, 183, 0.25);
+}
+
+/* Premium glow shimmer */
+.plan-card.premium::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: linear-gradient(
+    45deg,
+    transparent 40%,
+    rgba(110, 231, 183, 0.03) 45%,
+    rgba(110, 231, 183, 0.06) 50%,
+    rgba(110, 231, 183, 0.03) 55%,
+    transparent 60%
+  );
+  animation: shimmerSweep 6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmerSweep {
+  0% { transform: translateX(-100%) rotate(25deg); }
+  100% { transform: translateX(100%) rotate(25deg); }
+}
+
+/* ── Recommended Badge ── */
+.recommended-badge {
+  position: absolute;
+  top: -1px;
+  right: 24px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  padding: 6px 18px 8px;
+  border-radius: 0 0 12px 12px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
+  animation: badgePulse 3s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+  0%, 100% { box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4); }
+  50% { box-shadow: 0 4px 24px rgba(16, 185, 129, 0.6), 0 0 40px rgba(16, 185, 129, 0.2); }
+}
+
+/* ── Card Header ── */
+.plan-card-header {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid rgba(110, 231, 183, 0.1);
+}
+
+.plan-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.75rem;
+  display: block;
+}
+
+.plan-card-header h2 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #e2e8f0;
+  margin-bottom: 0.5rem;
+}
+
+.plan-card.premium .plan-card-header h2 {
+  color: #6ee7b7;
+}
+
+.plan-price {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+}
+
+.plan-price .currency {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: rgba(167, 243, 208, 0.7);
+}
+
+.plan-price .amount {
+  font-size: 3.2rem;
+  font-weight: 900;
+  color: #f1f5f9;
+  line-height: 1;
+}
+
+.plan-card.premium .plan-price .amount {
+  background: linear-gradient(135deg, #6ee7b7, #34d399);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.plan-price .period {
+  font-size: 0.95rem;
+  color: rgba(148, 163, 184, 0.6);
+  font-weight: 500;
+}
+
+.plan-subtitle {
+  font-size: 0.82rem;
+  color: rgba(110, 231, 183, 0.5);
+  margin-top: 0.4rem;
+}
+
+/* ── Feature List ── */
+.plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 2rem;
+}
+
+.plan-features li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  font-size: 0.9rem;
+  color: rgba(226, 232, 240, 0.75);
+  border-bottom: 1px solid rgba(110, 231, 183, 0.04);
+  transition: all 0.25s;
+}
+
+.plan-features li:last-child {
+  border-bottom: none;
+}
+
+.plan-features li:hover {
+  color: #e2e8f0;
+  padding-left: 4px;
+}
+
+.plan-features li .feature-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+.plan-features li .feature-icon.included {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.15);
+}
+
+.plan-features li .feature-icon.excluded {
+  background: rgba(100, 116, 139, 0.15);
+  color: rgba(148, 163, 184, 0.4);
+}
+
+.plan-features li.disabled {
+  color: rgba(148, 163, 184, 0.3);
+}
+
+/* ── CTA Button ── */
+.plan-cta {
+  width: 100%;
+  padding: 14px 24px;
+  border-radius: 14px;
+  font-family: 'Inter', sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  border: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.plan-cta.free-cta {
+  background: rgba(255, 255, 255, 0.08);
+  color: #a7f3d0;
+  border: 1px solid rgba(110, 231, 183, 0.2);
+}
+
+.plan-cta.free-cta:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(110, 231, 183, 0.35);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(16, 185, 129, 0.15);
+}
+
+.plan-cta.premium-cta {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+}
+
+.plan-cta.premium-cta:hover {
+  background: linear-gradient(135deg, #34d399, #10b981);
+  transform: translateY(-2px);
+  box-shadow:
+    0 8px 32px rgba(16, 185, 129, 0.4),
+    0 0 60px rgba(16, 185, 129, 0.15);
+}
+
+/* ── Pricing Duration Table ── */
+.pricing-duration {
+  max-width: 520px;
+  margin: 0 auto 3rem;
+  animation: fadeSlideUp 0.8s ease-out 0.45s both;
+}
+
+.pricing-duration h3 {
+  text-align: center;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: rgba(167, 243, 208, 0.85);
+  margin-bottom: 1.25rem;
+}
+
+.duration-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.duration-card {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(110, 231, 183, 0.1);
+  border-radius: 16px;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  transition: all 0.35s;
+  cursor: pointer;
+  position: relative;
+}
+
+.duration-card:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(110, 231, 183, 0.25);
+  transform: translateY(-4px);
+  box-shadow: 0 8px 32px rgba(16, 185, 129, 0.15);
+}
+
+.duration-card.best-value {
+  border-color: rgba(110, 231, 183, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.duration-card.best-value::before {
+  content: 'BEST VALUE';
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
+.duration-card .dur-period {
+  font-size: 0.85rem;
+  color: rgba(167, 243, 208, 0.6);
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+
+.duration-card .dur-price {
+  font-size: 1.8rem;
+  font-weight: 800;
+  color: #e2e8f0;
+}
+
+.duration-card .dur-price span {
+  font-size: 1rem;
+  color: rgba(148, 163, 184, 0.5);
+}
+
+.duration-card .dur-save {
+  font-size: 0.75rem;
+  color: #34d399;
+  margin-top: 0.4rem;
+  font-weight: 600;
+}
+
+/* ── Ultra AI Teaser Section ── */
+.ultra-ai-teaser {
+  max-width: 920px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(110, 231, 183, 0.1);
+  border-radius: 24px;
+  padding: 2.5rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  animation: fadeSlideUp 0.8s ease-out 0.6s both;
+}
+
+.ultra-ai-teaser::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(16, 185, 129, 0.05) 0%,
+    transparent 50%,
+    rgba(52, 211, 153, 0.03) 100%
+  );
+  pointer-events: none;
+}
+
+.ultra-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.15));
+  border: 1px solid rgba(110, 231, 183, 0.2);
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #6ee7b7;
+  margin-bottom: 1rem;
+  letter-spacing: 0.05em;
+  animation: badgePulse 3s ease-in-out infinite;
+}
+
+.ultra-ai-teaser h3 {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #e2e8f0;
+  margin-bottom: 0.75rem;
+}
+
+.ultra-ai-teaser p {
+  color: rgba(167, 243, 208, 0.5);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.ultra-features-mini {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.ultra-feature-tag {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(110, 231, 183, 0.08);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  color: rgba(167, 243, 208, 0.6);
+  transition: all 0.3s;
+}
+
+.ultra-feature-tag:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(110, 231, 183, 0.2);
+  color: #a7f3d0;
+}
+
+/* ── Animations ── */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Everything Included Label ── */
+.everything-included {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(110, 231, 183, 0.15);
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #34d399;
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .pricing-content {
+    padding: 2rem 1rem 3rem;
+  }
+
+  .plans-grid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+    max-width: 420px;
+  }
+
+  .plan-card {
+    padding: 2rem 1.5rem;
+  }
+
+  .duration-cards {
+    grid-template-columns: 1fr;
+    max-width: 280px;
+    margin: 0 auto;
+  }
+
+  .tab-btn {
+    padding: 10px 20px;
+    font-size: 0.85rem;
+  }
+
+  .ultra-ai-teaser {
+    padding: 2rem 1.5rem;
+  }
+
+  .ultra-features-mini {
+    gap: 0.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .pricing-header h1 {
+    font-size: 1.75rem;
+  }
+
+  .plan-price .amount {
+    font-size: 2.5rem;
+  }
+
+  .plan-card {
+    padding: 1.75rem 1.25rem;
+  }
+}

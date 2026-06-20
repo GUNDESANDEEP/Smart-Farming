@@ -33,7 +33,7 @@ def get_profile():
     """
     try:
         farmer_id = get_jwt_identity()
-        farmer = Farmer.get_farmer_by_id(farmer_id)
+        farmer = Farmer.get_by_id(farmer_id)
         
         if not farmer:
             return {'success': False, 'message': 'Farmer not found'}, 404

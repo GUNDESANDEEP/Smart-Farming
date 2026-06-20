@@ -4,7 +4,7 @@ Supports: Email/Password, Firebase, Google Sign-In, OTP, JWT, Forgot Password
 """
 
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity, decode_token
 from werkzeug.security import generate_password_hash, check_password_hash
 import random
 import string
@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timedelta
 from functools import wraps
 from models.models import User, Farmer, Buyer, OTP, Notification, BaseModel
+from utils.email_service import _build_otp_html, _build_email_html
 try:
     import firebase_admin
     from firebase_admin import credentials, auth as firebase_auth
@@ -48,7 +49,8 @@ if FIREBASE_AVAILABLE:
 # ============================================================================
 
 def send_email(to_email, subject, message):
-    """Send email - SMTP authentication is MANDATORY (uses STARTTLS port 587)"""
+    """Send email - SMTP authentication is MANDATORY (uses STARTTLS port 587)
+    Anti-spam: uses display name, Reply-To, and text/plain fallback."""
     sender_email = os.getenv('EMAIL_SENDER')
     sender_password = os.getenv('EMAIL_PASSWORD')
     
@@ -59,11 +61,21 @@ def send_email(to_email, subject, message):
         )
     
     try:
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
+        from email.utils import formataddr
+        msg = MIMEMultipart("alternative")
+        # Use display name to reduce spam score
+        msg['From'] = formataddr(('SmartFarm', sender_email))
         msg['To'] = to_email
         msg['Subject'] = subject
-        msg.attach(MIMEText(message, 'html'))
+        msg['Reply-To'] = sender_email
+        
+        # Add plain text fallback (reduces spam score)
+        import re
+        plain_text = re.sub(r'<[^>]+>', '', message).strip()
+        plain_text = re.sub(r'\s+', ' ', plain_text)
+        msg.attach(MIMEText(plain_text, 'plain', 'utf-8'))
+        # Add HTML version
+        msg.attach(MIMEText(message, 'html', 'utf-8'))
         
         smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', '587'))
@@ -77,17 +89,17 @@ def send_email(to_email, subject, message):
         server.send_message(msg)
         server.quit()
         
-        print(f"✅ Email sent to {to_email} (STARTTLS port 587)")
+        print(f"[OK] Email sent to {to_email} (STARTTLS port 587)")
         return True
     except smtplib.SMTPAuthenticationError as e:
         error_msg = (
-            f"❌ SMTP Authentication FAILED for {sender_email}. "
+            f"[ERR] SMTP Authentication FAILED for {sender_email}. "
             f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
         )
         print(error_msg)
         raise RuntimeError(error_msg)
     except Exception as e:
-        print(f"❌ Email error: {e}")
+        print(f"[ERR] Email error: {e}")
         return False
 
 def generate_otp():
@@ -261,14 +273,9 @@ def resend_otp():
         otp_code = generate_otp()
         OTP.create(email=email, otp_code=otp_code, purpose='email_verification')
         
-        email_body = f"""
-        <h2>Email Verification OTP</h2>
-        <p>Your verification OTP is:</p>
-        <h1>{otp_code}</h1>
-        <p>This OTP will expire in 10 minutes.</p>
-        """
+        email_body = _build_otp_html('Your email verification OTP is:', otp_code)
         
-        send_email(email, 'Verification OTP - Smart Farmer Marketplace', email_body)
+        send_email(email, 'SmartFarm - Email Verification OTP', email_body)
         
         return jsonify({'message': 'OTP sent to email'}), 200
     
@@ -304,19 +311,10 @@ def send_login_otp():
             (email, otp_code, now, expires_at)
         )
 
-        # Build email
-        email_body = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 30px; background: #f0fdf4; border-radius: 12px;">
-            <h2 style="color: #166534;">🌾 Smart Farmer Marketplace</h2>
-            <p style="color: #374151;">Your login verification OTP is:</p>
-            <div style="text-align: center; margin: 24px 0;">
-                <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #15803d; background: #dcfce7; padding: 12px 28px; border-radius: 8px;">{otp_code}</span>
-            </div>
-            <p style="color: #6b7280; font-size: 13px;">This OTP will expire in 5 minutes. Do not share it with anyone.</p>
-        </div>
-        """
+        # Build branded email
+        email_body = _build_otp_html('Your login verification OTP is:', otp_code, 'Valid for 5 minutes')
 
-        email_sent = send_email(email, 'Login OTP - Smart Farmer Marketplace', email_body)
+        email_sent = send_email(email, 'SmartFarm - Login OTP', email_body)
 
         if not email_sent:
             # SMTP is mandatory - do NOT leak OTP or allow bypass
@@ -369,7 +367,7 @@ def verify_login_otp():
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    """Login with email/phone and password - supports all roles"""
+    """Login with email/phone and password - sends OTP to email for verification"""
     try:
         data = request.get_json()
         role = data.get('role', 'farmer')
@@ -404,21 +402,164 @@ def login():
             return jsonify({'error': 'Invalid role'}), 400
         
         if not user:
-            return jsonify({'error': 'Account not found'}), 401
+            if role == 'buyer':
+                return jsonify({'error': 'No account found with this phone number. Please register first.'}), 401
+            else:
+                return jsonify({'error': 'No account found with this email. Please register first.'}), 401
         
         if not check_password_hash(user['password_hash'], password):
-            return jsonify({'error': 'Invalid password'}), 401
+            return jsonify({'error': 'Incorrect password. Please try again.'}), 401
         
-        # Build identity string
+        # Password verified — build user info
         user_id = user.get('id') or user.get('admin_id')
-        identity = str(user_id)
-        
-        # Get name
+        user_email = user.get('email', '')
         first_name = user.get('first_name', '')
         last_name = user.get('last_name', '')
         name = f"{first_name} {last_name}".strip()
         
-        # Create tokens with role in claims
+        # Admin and Farmer: direct login (no OTP)
+        if role in ('admin', 'farmer'):
+            identity = str(user_id)
+            access_token = create_access_token(
+                identity=identity,
+                additional_claims={'role': role, 'user_id': user_id}
+            )
+            refresh_token = create_refresh_token(identity=identity)
+            return jsonify({
+                'message': 'Login successful',
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'user': {
+                    'id': user_id, 'name': name, 'first_name': first_name,
+                    'last_name': last_name, 'email': user_email,
+                    'phone': user.get('phone', ''), 'role': role,
+                    'location': user.get('location', ''),
+                }
+            }), 200
+        
+        # Buyer: OTP verification required
+        if not user_email:
+            # No email on record — skip OTP, login directly
+            identity = str(user_id)
+            access_token = create_access_token(
+                identity=identity,
+                additional_claims={'role': role, 'user_id': user_id}
+            )
+            refresh_token = create_refresh_token(identity=identity)
+            return jsonify({
+                'message': 'Login successful',
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'user': {
+                    'id': user_id, 'name': name, 'first_name': first_name,
+                    'last_name': last_name, 'email': user_email,
+                    'phone': user.get('phone', ''), 'role': role,
+                    'location': user.get('location', ''),
+                }
+            }), 200
+        
+        # Generate and store OTP for buyer
+        otp_code = generate_otp()
+        now = datetime.now()
+        expires_at = now + timedelta(minutes=5)
+        
+        BaseModel.execute_insert(
+            """INSERT INTO otps (email, otp, created_at, expires_at)
+               VALUES (%s, %s, %s, %s)""",
+            (user_email, otp_code, now, expires_at)
+        )
+        
+        # Send OTP via branded email template
+        email_body = _build_otp_html('Your login verification OTP is:', otp_code, 'Valid for 5 minutes')
+        
+        email_sent = send_email(user_email, 'SmartFarm - Login OTP', email_body)
+        
+        if not email_sent:
+            return jsonify({'error': 'Failed to send OTP email. Please try again.'}), 500
+        
+        # Return user info + otp_required flag (NO tokens yet)
+        return jsonify({
+            'message': 'OTP sent to your email',
+            'otp_required': True,
+            'user': {
+                'id': user_id, 'name': name, 'first_name': first_name,
+                'last_name': last_name, 'email': user_email,
+                'phone': user.get('phone', ''), 'role': role,
+                'location': user.get('location', ''),
+            }
+        }), 200
+    
+    except Exception as e:
+        import psycopg2 as _pg2
+        error_str = str(e).lower()
+        is_db_error = (
+            isinstance(e, _pg2.OperationalError) or
+            isinstance(e, _pg2.InterfaceError) or
+            'connection' in error_str or
+            'server closed' in error_str or
+            'timeout' in error_str or
+            'database' in error_str
+        )
+        
+        if is_db_error:
+            print(f"[AUTH] Database error during login: {e}")
+            return jsonify({
+                'error': 'Server is warming up. Please try again in a moment.',
+                'error_code': 'database_error'
+            }), 503
+        
+        print(f"[AUTH] Login error: {e}")
+        return jsonify({
+            'error': 'Something went wrong. Please try again.',
+            'error_code': 'server_error'
+        }), 500
+
+
+@auth_bp.route('/complete-login', methods=['POST'])
+def complete_login_with_otp():
+    """Verify OTP and return JWT tokens to complete login"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip()
+        otp_code = data.get('otp', '').strip()
+        role = data.get('role', 'farmer')
+        
+        if not email or not otp_code:
+            return jsonify({'error': 'Email and OTP are required'}), 400
+        
+        # Verify OTP
+        query = """
+        SELECT * FROM otps
+        WHERE email = %s AND otp = %s AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        otp_record = BaseModel.execute_query(query, (email, otp_code), fetch_one=True)
+        
+        if not otp_record:
+            return jsonify({'error': 'Invalid or expired OTP'}), 400
+        
+        # Delete used OTP
+        BaseModel.execute_query("DELETE FROM otps WHERE id = %s", (otp_record['id'],))
+        
+        # Find the user and generate tokens
+        user = None
+        if role == 'farmer':
+            user = BaseModel.execute_query("SELECT * FROM farmers WHERE email = %s", (email,), fetch_one=True)
+        elif role == 'buyer':
+            user = BaseModel.execute_query("SELECT * FROM buyers WHERE email = %s", (email,), fetch_one=True)
+        elif role == 'admin':
+            user = BaseModel.execute_query("SELECT *, admin_id as id FROM admins WHERE email = %s", (email,), fetch_one=True)
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        user_id = user.get('id') or user.get('admin_id')
+        identity = str(user_id)
+        first_name = user.get('first_name', '')
+        last_name = user.get('last_name', '')
+        name = f"{first_name} {last_name}".strip()
+        
         access_token = create_access_token(
             identity=identity,
             additional_claims={'role': role, 'user_id': user_id}
@@ -427,22 +568,19 @@ def login():
         
         return jsonify({
             'message': 'Login successful',
+            'verified': True,
             'access_token': access_token,
             'refresh_token': refresh_token,
             'user': {
-                'id': user_id,
-                'name': name,
-                'first_name': first_name,
-                'last_name': last_name,
-                'email': user.get('email', ''),
-                'phone': user.get('phone', ''),
-                'role': role,
+                'id': user_id, 'name': name, 'first_name': first_name,
+                'last_name': last_name, 'email': user.get('email', ''),
+                'phone': user.get('phone', ''), 'role': role,
                 'location': user.get('location', ''),
             }
         }), 200
     
     except Exception as e:
-        print(f"Login error: {e}")
+        print(f"Complete login error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @auth_bp.route('/otp-login', methods=['POST'])
@@ -661,44 +799,19 @@ def forgot_password():
         
         # Store OTP in database
         BaseModel.execute_insert(
-            'INSERT INTO otps (email, otp, created_at, expires_at) VALUES (%s, %s, NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE))',
+            'INSERT INTO otps (email, otp, created_at, expires_at) VALUES (%s, %s, NOW(), NOW() + INTERVAL \'10 minutes\')',
             (email, otp_code)
         )
         
-        # Send OTP via email using SMTP - MANDATORY
-        sender_email = os.getenv('EMAIL_SENDER')
-        sender_password = os.getenv('EMAIL_PASSWORD')
-        
-        if not sender_email or not sender_password:
-            return jsonify({'error': 'SMTP credentials not configured. Email sending is mandatory.'}), 500
+        # Send branded OTP email using shared send_email (with anti-spam headers)
+        email_body = _build_otp_html('Your password reset OTP is:', otp_code)
         
         try:
-            msg = MIMEMultipart()
-            msg['From'] = sender_email
-            msg['To'] = email
-            msg['Subject'] = 'SmartFarm - Password Reset OTP'
-            body = f'''<html><body style="font-family:Arial;text-align:center;">
-            <div style="max-width:400px;margin:auto;padding:30px;background:#f0fdf4;border-radius:16px;">
-            <h2 style="color:#166534;">🌿 SmartFarm</h2>
-            <p>Your password reset OTP is:</p>
-            <h1 style="color:#22c55e;letter-spacing:8px;">{otp_code}</h1>
-            <p style="color:#888;">Valid for 10 minutes</p>
-            </div></body></html>'''
-            msg.attach(MIMEText(body, 'html'))
-            # Use SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
-            server = smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587)), timeout=15)
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-            server.quit()
-            print(f"✅ Password reset OTP sent to {email} (STARTTLS port 587)")
-        except smtplib.SMTPAuthenticationError as e:
-            print(f'❌ SMTP Authentication FAILED: {e}')
-            return jsonify({'error': 'SMTP authentication failed. Check email credentials.'}), 500
+            email_sent = send_email(email, 'SmartFarm - Password Reset OTP', email_body)
+            if not email_sent:
+                return jsonify({'error': 'Failed to send OTP email'}), 500
         except Exception as e:
-            print(f'❌ Email send error: {e}')
+            print(f'[ERR] Email send error: {e}')
             return jsonify({'error': 'Failed to send OTP email'}), 500
         
         return jsonify({'success': True, 'message': 'OTP sent to your email'}), 200
@@ -791,7 +904,7 @@ def change_password():
 @auth_bp.route('/refresh-token', methods=['POST'])
 @jwt_required(refresh=True)
 def refresh_token():
-    """Refresh access token"""
+    """Refresh access token (Authorization header method)"""
     try:
         user_id = get_jwt_identity()
         new_access_token = create_access_token(identity=user_id)
@@ -804,17 +917,110 @@ def refresh_token():
         print(f"Token refresh error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@auth_bp.route('/logout', methods=['POST'])
-@jwt_required()
-def logout():
-    """Logout user"""
+@auth_bp.route('/refresh', methods=['POST'])
+def refresh_access_token():
+    """Refresh access token using refresh_token from request body.
+    This is the primary refresh endpoint used by the frontend.
+    It decodes the refresh token manually and issues a new access token."""
     try:
-        # Token will be invalidated on client-side by removing from storage
-        return jsonify({'message': 'Logout successful'}), 200
+        data = request.get_json()
+        refresh_token_str = data.get('refresh_token') if data else None
+        
+        if not refresh_token_str:
+            return jsonify({'error': 'refresh_token_missing', 'message': 'Refresh token is required'}), 400
+        
+        try:
+            decoded = decode_token(refresh_token_str)
+        except Exception as decode_err:
+            print(f"[AUTH] Refresh token decode failed: {decode_err}")
+            return jsonify({'error': 'refresh_token_expired', 'message': 'Refresh token is invalid or expired. Please login again.'}), 401
+        
+        user_id = decoded.get('sub')
+        if not user_id:
+            return jsonify({'error': 'refresh_token_invalid', 'message': 'Invalid refresh token'}), 401
+        
+        # Preserve role claims from the original token
+        additional_claims = {}
+        if 'role' in decoded:
+            additional_claims['role'] = decoded['role']
+        if 'user_id' in decoded:
+            additional_claims['user_id'] = decoded['user_id']
+        
+        new_access_token = create_access_token(
+            identity=str(user_id),
+            additional_claims=additional_claims
+        )
+        
+        print(f"[AUTH] Token refreshed for user {user_id}")
+        return jsonify({'access_token': new_access_token}), 200
     
     except Exception as e:
-        print(f"Logout error: {e}")
-        return jsonify({'error': str(e)}), 500
+        print(f"[AUTH] Refresh error: {e}")
+        return jsonify({'error': 'server_error', 'message': 'Failed to refresh token'}), 500
+
+@auth_bp.route('/session/validate', methods=['GET'])
+@jwt_required()
+def validate_session():
+    """Validate current session — used by frontend on app startup.
+    Returns user info if the access token is still valid."""
+    try:
+        user_id = get_jwt_identity()
+        # Determine user role by checking all tables
+        user_info = None
+        role = None
+        
+        # Check farmers
+        farmer = BaseModel.execute_query(
+            'SELECT id, first_name, last_name, email, phone, location FROM farmers WHERE id = %s',
+            (user_id,), fetch_one=True
+        )
+        if farmer:
+            user_info = farmer
+            role = 'farmer'
+        
+        if not user_info:
+            buyer = BaseModel.execute_query(
+                'SELECT id, first_name, last_name, email, phone, location FROM buyers WHERE id = %s',
+                (user_id,), fetch_one=True
+            )
+            if buyer:
+                user_info = buyer
+                role = 'buyer'
+        
+        if not user_info:
+            admin = BaseModel.execute_query(
+                'SELECT admin_id as id, first_name, last_name, email FROM admins WHERE admin_id = %s',
+                (user_id,), fetch_one=True
+            )
+            if admin:
+                user_info = admin
+                role = 'admin'
+        
+        if not user_info:
+            return jsonify({'valid': False, 'error': 'User not found'}), 404
+        
+        return jsonify({
+            'valid': True,
+            'user': {
+                'id': user_info.get('id'),
+                'first_name': user_info.get('first_name', ''),
+                'last_name': user_info.get('last_name', ''),
+                'name': f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
+                'email': user_info.get('email', ''),
+                'phone': user_info.get('phone', ''),
+                'role': role,
+                'location': user_info.get('location', ''),
+            }
+        }), 200
+    
+    except Exception as e:
+        print(f"[AUTH] Session validate error: {e}")
+        return jsonify({'valid': False, 'error': 'server_error'}), 500
+
+@auth_bp.route('/logout', methods=['POST'])
+def logout():
+    """Logout user — no JWT required so it works even with expired tokens"""
+    return jsonify({'message': 'Logout successful'}), 200
 
 # ============================================================================
 # USER PROFILE

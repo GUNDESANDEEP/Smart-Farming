@@ -23,6 +23,76 @@ load_dotenv()
 
 buyer_bp = Blueprint('buyer', __name__, url_prefix='/api/buyer')
 
+
+# ============================================================================
+# HELPER: Resolve buyer from JWT (supports farmers shopping as buyers)
+# ============================================================================
+
+def get_or_create_buyer(user_id):
+    """
+    Get buyer by JWT identity. Checks multiple lookup paths:
+    1. buyers.id = user_id
+    2. buyers.buyer_id = user_id
+    3. If user is a farmer, auto-create buyer record
+    4. If user is an admin, auto-create buyer record
+    Also checks JWT claims for role hints.
+    """
+    uid = int(user_id)
+    
+    # Try 1: Direct buyer id lookup
+    buyer = BaseModel.execute_query(
+        "SELECT * FROM buyers WHERE id = %s", (uid,), fetch_one=True
+    )
+    if buyer:
+        return buyer
+    
+    # Try 2: buyer_id lookup (used by buyer_auth.py login)
+    buyer = BaseModel.execute_query(
+        "SELECT * FROM buyers WHERE buyer_id = %s", (uid,), fetch_one=True
+    )
+    if buyer:
+        return buyer
+    
+    # Try 3: Check if user is a farmer — auto-create buyer record
+    farmer = BaseModel.execute_query(
+        "SELECT * FROM farmers WHERE id = %s", (uid,), fetch_one=True
+    )
+    if farmer:
+        return _create_buyer_from_record(farmer, uid)
+    
+    # Try 4: Check if user is an admin — auto-create buyer record
+    admin = BaseModel.execute_query(
+        "SELECT * FROM admins WHERE admin_id = %s", (uid,), fetch_one=True
+    )
+    if admin:
+        return _create_buyer_from_record(admin, uid)
+    
+    return None
+
+
+def _create_buyer_from_record(record, uid):
+    """Create a buyer record from a farmer/admin record"""
+    try:
+        buyer_id = BaseModel.execute_insert(
+            """INSERT INTO buyers (first_name, last_name, email, phone, password_hash, location, buyer_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (record.get('first_name', ''), record.get('last_name', ''),
+             record.get('email', ''), record.get('phone', ''),
+             record.get('password_hash', ''), record.get('location', ''),
+             uid)
+        )
+        return BaseModel.execute_query(
+            "SELECT * FROM buyers WHERE id = %s", (buyer_id,), fetch_one=True
+        )
+    except Exception as e:
+        # If insert fails (e.g. duplicate phone/email), find by email/phone
+        buyer = BaseModel.execute_query(
+            "SELECT * FROM buyers WHERE email = %s OR phone = %s",
+            (record.get('email', ''), record.get('phone', '')), fetch_one=True
+        )
+        return buyer
+
+
 # Initialize Razorpay
 razorpay_client = None
 if RAZORPAY_AVAILABLE:
@@ -54,7 +124,8 @@ def browse_products():
                    f.location as farmer_location
             FROM products p 
             LEFT JOIN farmers f ON p.farmer_id = f.id 
-            WHERE p.is_available = TRUE AND p.status = 'approved'
+            WHERE (p.is_available = TRUE AND p.status = 'approved')
+               OR p.status = 'sold_out'
         """
         params = []
         
@@ -100,6 +171,7 @@ def browse_products():
                 'farmer_name': p.get('farmer_name', ''),
                 'farmer_location': p.get('farmer_location', ''),
                 'discount_percent': int(p.get('discount_percent', 0)),
+                'status': p.get('status', 'approved'),
                 'harvest_date': p['harvest_date'].isoformat() if p.get('harvest_date') else None,
                 'created_at': p['created_at'].isoformat() if p.get('created_at') else None,
             })
@@ -190,11 +262,12 @@ def get_cart():
     """Get shopping cart"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
-        cart = Cart.get_or_create(buyer['id'])
-        items = Cart.get_items(cart['id'])
+        
+        # Cart uses buyer_id directly
+        items = Cart.get_items(buyer['id'])
         
         # Calculate totals
         subtotal = 0
@@ -202,7 +275,7 @@ def get_cart():
             subtotal += (item['price'] * item['quantity'])
         
         return jsonify({
-            'cart_id': cart['id'],
+            'cart_id': buyer['id'],
             'items': items,
             'subtotal': subtotal,
             'item_count': len(items)
@@ -218,7 +291,7 @@ def add_to_cart():
     """Add item to cart"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         data = request.get_json()
@@ -236,8 +309,8 @@ def add_to_cart():
         if quantity > product['quantity']:
             return jsonify({'error': f'Only {product["quantity"]} available'}), 400
         
-        cart = Cart.get_or_create(buyer['id'])
-        Cart.add_item(cart['id'], product_id, quantity)
+        # Cart.add_item uses buyer_id directly (no separate cart table)
+        Cart.add_item(buyer['id'], product_id, quantity)
         
         return jsonify({'message': 'Item added to cart'}), 200
     
@@ -251,25 +324,27 @@ def update_cart_item(cart_item_id):
     """Update cart item quantity"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
         data = request.get_json()
-        quantity = data.get('quantity', 1)
+        quantity = float(data.get('quantity', 1))
         
         if quantity <= 0:
             return jsonify({'error': 'Invalid quantity'}), 400
         
         BaseModel.execute_query(
-            "UPDATE cart_items SET quantity = %s WHERE id = %s",
+            "UPDATE cart SET quantity = %s WHERE id = %s",
             (quantity, cart_item_id)
         )
         
         return jsonify({'message': 'Cart item updated'}), 200
     
     except Exception as e:
-        print(f"Update cart item error: {e}")
+        import traceback
+        print(f"[CART-UPDATE-ERROR] {e}", flush=True)
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @buyer_bp.route('/cart/items/<int:cart_item_id>', methods=['DELETE'])
@@ -278,7 +353,7 @@ def remove_from_cart(cart_item_id):
     """Remove item from cart"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -296,11 +371,12 @@ def clear_cart():
     """Clear entire cart"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
-        cart = Cart.get_or_create(buyer['id'])
-        Cart.clear_cart(cart['id'])
+        
+        # Cart.clear_cart uses buyer_id directly
+        Cart.clear_cart(buyer['id'])
         
         return jsonify({'message': 'Cart cleared'}), 200
     
@@ -318,7 +394,7 @@ def create_order():
     """Create order from cart"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         data = request.get_json()
@@ -396,7 +472,7 @@ def get_orders():
     """Get buyer's orders"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -423,7 +499,7 @@ def get_order(order_id):
     """Get order details"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -446,7 +522,7 @@ def cancel_order(order_id):
     """Cancel order"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -493,7 +569,7 @@ def create_payment():
     """Create Razorpay payment"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -549,7 +625,7 @@ def verify_payment():
     """Verify Razorpay payment"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -633,7 +709,7 @@ def create_review(order_id):
     """Create product review"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -689,7 +765,7 @@ def get_profile():
     """Get buyer profile"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         
@@ -705,7 +781,7 @@ def update_profile():
     """Update buyer profile"""
     try:
         user_id = get_jwt_identity()
-        buyer = BaseModel.execute_query("SELECT * FROM buyers WHERE id = %s", (int(user_id),), fetch_one=True)
+        buyer = get_or_create_buyer(user_id)
         if not buyer:
             return jsonify({'error': 'Buyer access required'}), 403
         data = request.get_json()

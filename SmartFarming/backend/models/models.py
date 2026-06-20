@@ -28,35 +28,136 @@ class BaseModel:
     
     @staticmethod
     def execute_query(query, params=None, fetch_one=False, fetch_all=False):
-        """Execute query and return results"""
+        """Execute query and return results (with auto-retry and pool recovery)"""
+        import time as _time
         pool = get_db_pool()
-        conn = pool.getconn()
-        try:
-            from psycopg2.extras import RealDictCursor
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            conn.commit()
-            
-            if fetch_one:
-                result = cursor.fetchone()
-                return dict(result) if result else None
-            elif fetch_all:
-                results = cursor.fetchall()
-                return [dict(row) for row in results] if results else []
-            else:
-                return cursor.rowcount
-        except Exception as e:
-            conn.rollback()
-            print(f"Database error: {e}")
-            raise
-        finally:
-            cursor.close()
-            pool.putconn(conn)
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            conn = None
+            cursor = None
+            start = _time.time()
+            try:
+                conn = pool.getconn()
+                
+                # Test if connection is alive
+                if conn.closed:
+                    pool.putconn(conn, close=True)
+                    conn = pool.getconn()
+                
+                # On retry attempts, validate the connection first
+                if attempt > 0:
+                    try:
+                        test_cur = conn.cursor()
+                        test_cur.execute('SELECT 1')
+                        test_cur.close()
+                    except Exception:
+                        # Connection still bad — get a fresh one
+                        try:
+                            pool.putconn(conn, close=True)
+                        except Exception:
+                            pass
+                        conn = pool.getconn()
+                
+                from psycopg2.extras import RealDictCursor
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                
+                conn.commit()
+                
+                # Log slow queries (>1 second)
+                elapsed = (_time.time() - start) * 1000
+                if elapsed > 1000:
+                    short_query = query.strip()[:80].replace('\n', ' ')
+                    print(f"[SLOW-QUERY] {elapsed:.0f}ms: {short_query}...")
+                
+                if fetch_one:
+                    result = cursor.fetchone()
+                    return dict(result) if result else None
+                elif fetch_all:
+                    results = cursor.fetchall()
+                    return [dict(row) for row in results] if results else []
+                else:
+                    return cursor.rowcount
+            except (Exception,) as e:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                error_str = str(e).lower()
+                # Retry on transient connection/timeout errors
+                is_transient = (
+                    'closed' in error_str or 
+                    'connection' in error_str or 
+                    'server closed' in error_str or
+                    'terminating connection' in error_str or
+                    'timeout' in error_str or
+                    'ssl' in error_str or
+                    'eof' in error_str
+                )
+                if attempt < max_retries - 1 and is_transient:
+                    print(f"[DB-RETRY] Attempt {attempt + 1}/{max_retries} failed: {e}")
+                    try:
+                        if conn:
+                            pool.putconn(conn, close=True)
+                            conn = None
+                    except Exception:
+                        pass
+                    _time.sleep(0.5 * (attempt + 1))  # Backoff: 0.5s, 1s
+                    continue
+                
+                # All retries exhausted — try pool recreation as last resort
+                if is_transient and attempt == max_retries - 1:
+                    print(f"[DB-RECOVERY] All {max_retries} retries failed. Attempting pool recreation...")
+                    try:
+                        from app import recreate_db_pool
+                        if recreate_db_pool():
+                            print(f"[DB-RECOVERY] Pool recreated. Retrying query one final time...")
+                            # One more attempt with the new pool
+                            new_pool = get_db_pool()
+                            final_conn = new_pool.getconn()
+                            try:
+                                final_cursor = final_conn.cursor(cursor_factory=RealDictCursor)
+                                if params:
+                                    final_cursor.execute(query, params)
+                                else:
+                                    final_cursor.execute(query)
+                                final_conn.commit()
+                                if fetch_one:
+                                    result = final_cursor.fetchone()
+                                    return dict(result) if result else None
+                                elif fetch_all:
+                                    results = final_cursor.fetchall()
+                                    return [dict(row) for row in results] if results else []
+                                else:
+                                    return final_cursor.rowcount
+                            finally:
+                                try:
+                                    final_cursor.close()
+                                except Exception:
+                                    pass
+                                new_pool.putconn(final_conn)
+                    except Exception as recovery_err:
+                        print(f"[DB-RECOVERY] Recovery failed: {recovery_err}")
+                
+                print(f"[DB-ERROR] {e}")
+                raise
+            finally:
+                if cursor:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+                if conn:
+                    try:
+                        pool.putconn(conn)
+                    except Exception:
+                        pass
     
     @staticmethod
     def execute_insert(query, params):
@@ -503,7 +604,8 @@ class Order(BaseModel):
     def get_farmer_orders(farmer_id, status=None, limit=50, offset=0):
         """Get orders for farmer"""
         query = """
-        SELECT o.*, p.name as product_name,
+        SELECT o.*, o.total_amount as total, p.name as product_name,
+               CONCAT(b.first_name, ' ', b.last_name) as buyer_name,
                b.phone as buyer_phone, b.email as buyer_email,
                b.location as buyer_address, b.city as buyer_city,
                b.state as buyer_state, b.pincode as buyer_pincode,

@@ -141,16 +141,17 @@ def create_product():
         if quantity <= 0:
             return jsonify({'error': 'Quantity must be positive'}), 400
         
-        images = json.dumps(data.get('images', []))
-        organic = 1 if data.get('organic') else 0
+        images = json.dumps(data.get('images', []) if data.get('images') else [])
+        is_organic = data.get('is_organic', False)
         harvest_date = data.get('harvest_date')
+        discount_percentage = float(data.get('discount_percentage', 0))
         
         product_id = BaseModel.execute_insert(
             """INSERT INTO products (farmer_id, name, category, description, price, quantity, unit, 
-                                     images, organic, harvest_date, location, is_available, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, 'pending')""",
+                                     images, is_organic, harvest_date, location, discount_percentage, is_available, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, 'pending')""",
             (farmer['id'], name, category, description, price, quantity, unit,
-             images, organic, harvest_date, location)
+             images, is_organic, harvest_date, location, discount_percentage)
         )
         
         return jsonify({
@@ -260,6 +261,15 @@ def update_product(product_id):
                     update_fields[field] = data[field]
         
         Product.update(product_id, **update_fields)
+        
+        # Auto-restore sold-out products when farmer restocks
+        if 'quantity' in update_fields:
+            new_qty = float(update_fields['quantity'])
+            if new_qty > 0 and product.get('status') == 'sold_out':
+                BaseModel.execute_query(
+                    "UPDATE products SET status = 'approved', is_available = true WHERE id = %s",
+                    (product_id,)
+                )
         
         return jsonify({'message': 'Product updated successfully'}), 200
     

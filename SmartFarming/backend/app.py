@@ -4,11 +4,22 @@ Platform: Render.com + Neon PostgreSQL + Redis Cloud
 Single entry point. Consolidated blueprints.
 """
 
+# Fix Windows console encoding for emoji characters (prevents 'charmap' codec errors)
+import sys, os
+if sys.platform == 'win32':
+    os.environ['PYTHONUTF8'] = '1'
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
 import os
+import time
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
@@ -34,17 +45,57 @@ if not DATABASE_URL:
     if db_host and 'neon.tech' in db_host:
         DATABASE_URL += "?sslmode=require"
 
-# Connection Pool
+# Connection Pool with keepalive for remote PostgreSQL (Render/Neon)
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
         minconn=1,
         maxconn=10,
-        dsn=DATABASE_URL
+        dsn=DATABASE_URL,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        connect_timeout=10,
+        options='-c statement_timeout=30000'
     )
     print(f"[OK] PostgreSQL connection pool created (Neon)")
+    # Warmup: validate a connection immediately to prevent first-request failures
+    try:
+        warmup_conn = db_pool.getconn()
+        warmup_cur = warmup_conn.cursor()
+        warmup_cur.execute('SELECT 1')
+        warmup_cur.close()
+        db_pool.putconn(warmup_conn)
+        print(f"[OK] Database warmup successful")
+    except Exception as warmup_err:
+        print(f"[WARN] Database warmup failed (will retry on first request): {warmup_err}")
 except Exception as e:
     print(f"[ERR] PostgreSQL pool creation failed: {e}")
     db_pool = None
+
+def recreate_db_pool():
+    """Recreate the database connection pool if all connections become stale.
+    Called by models.py when retries are exhausted."""
+    global db_pool
+    try:
+        if db_pool:
+            try:
+                db_pool.closeall()
+            except Exception:
+                pass
+        db_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=10, dsn=DATABASE_URL,
+            keepalives=1, keepalives_idle=30, keepalives_interval=10,
+            keepalives_count=5, connect_timeout=10,
+            options='-c statement_timeout=30000'
+        )
+        from models.models import set_db_pool
+        set_db_pool(db_pool)
+        print(f"[OK] Database pool recreated successfully")
+        return True
+    except Exception as e:
+        print(f"[ERR] Database pool recreation failed: {e}")
+        return False
 
 app.config['DATABASE_URL'] = DATABASE_URL
 
@@ -81,7 +132,7 @@ app.config['REDIS_CLIENT'] = redis_client
 # ============================================================================
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'change-me-in-production')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=7)
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 
 # ============================================================================
@@ -89,22 +140,23 @@ app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 # ============================================================================
 jwt = JWTManager(app)
 
-# CORS - Only allow known origins in production
+# CORS - Manual implementation (Flask-CORS 4.0.0 has bugs with Flask 3.x)
 cors_origins = os.getenv('CORS_ORIGINS', '*')
 if cors_origins == '*':
     allowed_origins = ["*"]
 else:
     allowed_origins = [o.strip() for o in cors_origins.split(',')]
-    allowed_origins.extend([
-        "http://localhost:3000",
-        os.getenv('FRONTEND_URL', 'http://localhost:3000'),
-    ])
+    for port in ["3000", "3001", "3002"]:
+        origin = f"http://localhost:{port}"
+        if origin not in allowed_origins:
+            allowed_origins.append(origin)
+    frontend_url = os.getenv('FRONTEND_URL', '')
+    if frontend_url and frontend_url not in allowed_origins:
+        allowed_origins.append(frontend_url)
 
-CORS(app, resources={r"/api/*": {
-    "origins": allowed_origins,
-    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    "allow_headers": ["Content-Type", "Authorization"]
-}})
+print(f"[OK] CORS allowed origins: {allowed_origins}")
+
+# CORS headers are added in add_security_headers below
 
 # Pass DB pool to models
 from models.models import set_db_pool
@@ -288,6 +340,20 @@ try:
 except Exception as e:
     print(f"[ERR] weather: {e}")
 
+try:
+    from routes.order_flow import order_flow_bp
+    app.register_blueprint(order_flow_bp)
+    blueprints_registered.append(f"order_flow_bp -> {order_flow_bp.url_prefix}")
+except Exception as e:
+    print(f"[ERR] order_flow: {e}")
+
+try:
+    from routes.saas_dashboard import saas_dashboard_bp
+    app.register_blueprint(saas_dashboard_bp)
+    blueprints_registered.append(f"saas_dashboard_bp -> {saas_dashboard_bp.url_prefix}")
+except Exception as e:
+    print(f"[ERR] saas_dashboard: {e}")
+
 # ============================================================================
 # ERROR HANDLERS
 # ============================================================================
@@ -318,15 +384,52 @@ def internal_error(error):
 
 @jwt.expired_token_loader
 def expired_token_callback(jwt_header, jwt_data):
-    return jsonify({'error': 'Token expired', 'message': 'Please login again'}), 401
+    return jsonify({
+        'error': 'token_expired',
+        'message': 'Your session has expired. Please login again.'
+    }), 401
 
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
-    return jsonify({'error': 'Invalid token', 'message': 'Token is malformed'}), 401
+    return jsonify({
+        'error': 'token_invalid',
+        'message': 'Invalid authentication token.'
+    }), 401
 
 @jwt.unauthorized_loader
 def missing_token_callback(error):
-    return jsonify({'error': 'Authorization required', 'message': 'Missing token'}), 401
+    return jsonify({
+        'error': 'token_missing',
+        'message': 'Authentication token is required.'
+    }), 401
+
+@jwt.revoked_token_loader
+def revoked_token_callback(jwt_header, jwt_data):
+    return jsonify({
+        'error': 'token_revoked',
+        'message': 'This token has been revoked.'
+    }), 401
+
+# ============================================================================
+# REQUEST LOGGING MIDDLEWARE
+# ============================================================================
+
+@app.before_request
+def log_request_start():
+    """Record request start time for performance logging"""
+    request._start_time = time.time()
+
+@app.after_request
+def log_request_timing(response):
+    """Log request method, path, status, and duration in ms"""
+    duration_ms = (time.time() - getattr(request, '_start_time', time.time())) * 1000
+    path = request.path
+    # Skip noisy health checks and OPTIONS preflight
+    if '/health' not in path and request.method != 'OPTIONS':
+        status = response.status_code
+        level = 'SLOW' if duration_ms > 2000 else 'REQ'
+        print(f"[{level}] {request.method} {path} -> {status} ({duration_ms:.0f}ms)")
+    return response
 
 # ============================================================================
 # SECURITY HEADERS
@@ -334,11 +437,22 @@ def missing_token_callback(error):
 
 @app.after_request
 def add_security_headers(response):
+    # Security headers
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    # CORS headers (added here because this handler is proven to execute)
+    origin = request.headers.get('Origin', '')
+    if origin:
+        response.headers['Access-Control-Allow-Origin'] = origin
+    else:
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    response.headers['Access-Control-Max-Age'] = '3600'
     return response
 
 # ============================================================================

@@ -12,9 +12,15 @@ import ForgotPassword from './pages/auth/ForgotPassword';
 
 // Farmer Pages
 import FarmerDashboard from './pages/farmer/Dashboard';
+import FarmerEarnings from './pages/farmer/Earnings';
+import FarmerProducts from './pages/farmer/Products';
+import FarmerOrders from './pages/farmer/Orders';
 
 // Buyer Pages
 import BuyerMarketplace from './pages/buyer/Marketplace';
+
+// Pricing Page
+import PricingPlans from './pages/PricingPlans';
 
 // Admin Pages
 // (to be implemented)
@@ -45,6 +51,7 @@ function App() {
         <Route path="/otp-login" element={<OTPLogin />} />
         <Route path="/email-verification" element={<EmailVerification />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/pricing" element={<PricingPlans />} />
 
         {/* Farmer Routes */}
         <Route
@@ -52,6 +59,30 @@ function App() {
           element={
             <ProtectedRoute requiredRole="farmer">
               <FarmerDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/farmer/earnings"
+          element={
+            <ProtectedRoute requiredRole="farmer">
+              <FarmerEarnings />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/farmer/products"
+          element={
+            <ProtectedRoute requiredRole="farmer">
+              <FarmerProducts />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/farmer/orders"
+          element={
+            <ProtectedRoute requiredRole="farmer">
+              <FarmerOrders />
             </ProtectedRoute>
           }
         />

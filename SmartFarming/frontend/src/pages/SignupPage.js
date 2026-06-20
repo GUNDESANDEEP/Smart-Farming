@@ -132,7 +132,7 @@ const SignupPage = () => {
       if (token && user) {
         tokenUtils.setTokens(token);
         localStorage.setItem('user', JSON.stringify(user));
-        login(user, token);
+        login(user, token, data.refresh_token);
         toast.success(`Welcome, ${user.name || first_name}! Account created successfully. 🌾`);
         const dashboardRoutes = { farmer: '/farmer', buyer: '/buyer' };
         navigate(dashboardRoutes[role] || '/');

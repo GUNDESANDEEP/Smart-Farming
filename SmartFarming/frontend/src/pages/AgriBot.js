@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { FiSend, FiCamera, FiGlobe, FiX, FiPaperclip, FiVolume2, FiVolumeX, FiPlus, FiTrash2, FiMessageSquare, FiMenu } from 'react-icons/fi';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 const getToken = () => localStorage.getItem('access_token');
 const STORAGE_KEY = 'agribot_chats';
 
@@ -147,6 +147,7 @@ const AgriBot = () => {
     } else if (chatList.length === 0) {
       startNewChat('en');
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ── AUTO-TRANSLATE: when language changes, re-translate all bot messages ── */
@@ -192,6 +193,7 @@ const AgriBot = () => {
     };
 
     translateAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [language]);
 
   /* ── save messages to chatList when they change ── */

@@ -70,6 +70,10 @@ def dashboard():
         
         return jsonify({
             'success': True,
+            'total_users': stats['total_farmers'] + stats['total_buyers'],
+            'total_orders': stats['total_orders'],
+            'total_revenue': stats['total_revenue'],
+            'pending_products': stats['pending_products'],
             'stats': stats
         }), 200
     
@@ -92,12 +96,12 @@ def get_users():
             return jsonify({'error': 'Admin access required'}), 403
         
         farmers = BaseModel.execute_query(
-            "SELECT id, first_name, last_name, email, phone, location, status, created_at FROM farmers ORDER BY created_at DESC",
+            "SELECT id, first_name, last_name, email, phone, location, is_active, created_at FROM farmers ORDER BY created_at DESC",
             fetch_all=True
         ) or []
         
         buyers = BaseModel.execute_query(
-            "SELECT id, first_name, last_name, email, phone, location, status, created_at FROM buyers ORDER BY created_at DESC",
+            "SELECT id, first_name, last_name, email, phone, location, is_verified, created_at FROM buyers ORDER BY created_at DESC",
             fetch_all=True
         ) or []
         
@@ -164,14 +168,14 @@ def suspend_user(user_id):
         if role == 'farmer' or not role:
             result = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (user_id,), fetch_one=True)
             if result:
-                BaseModel.execute_query("UPDATE farmers SET status = 'suspended' WHERE id = %s", (user_id,))
+                BaseModel.execute_query("UPDATE farmers SET is_active = false WHERE id = %s", (user_id,))
                 updated = True
                 role = 'farmer'
         
         if not updated and (role == 'buyer' or not role):
             result = BaseModel.execute_query("SELECT id FROM buyers WHERE id = %s", (user_id,), fetch_one=True)
             if result:
-                BaseModel.execute_query("UPDATE buyers SET status = 'suspended' WHERE id = %s", (user_id,))
+                BaseModel.execute_query("UPDATE buyers SET is_verified = false WHERE id = %s", (user_id,))
                 updated = True
                 role = 'buyer'
         
@@ -181,9 +185,9 @@ def suspend_user(user_id):
         # Log the action
         try:
             BaseModel.execute_insert(
-                """INSERT INTO admin_activity_log (admin_id, action, module, target_id, details)
-                   VALUES (%s, %s, %s, %s, %s)""",
-                (admin_user_id, 'suspend_user', role, str(user_id), reason)
+                """INSERT INTO admin_activity_log (admin_id, action, module, target_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (admin_user_id, 'suspend_user', role, str(user_id))
             )
         except Exception:
             pass  # Non-critical
@@ -211,14 +215,14 @@ def activate_user(user_id):
         if role == 'farmer' or not role:
             result = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (user_id,), fetch_one=True)
             if result:
-                BaseModel.execute_query("UPDATE farmers SET status = 'active' WHERE id = %s", (user_id,))
+                BaseModel.execute_query("UPDATE farmers SET is_active = true WHERE id = %s", (user_id,))
                 updated = True
                 role = 'farmer'
         
         if not updated and (role == 'buyer' or not role):
             result = BaseModel.execute_query("SELECT id FROM buyers WHERE id = %s", (user_id,), fetch_one=True)
             if result:
-                BaseModel.execute_query("UPDATE buyers SET status = 'active' WHERE id = %s", (user_id,))
+                BaseModel.execute_query("UPDATE buyers SET is_verified = true WHERE id = %s", (user_id,))
                 updated = True
                 role = 'buyer'
         
@@ -228,9 +232,9 @@ def activate_user(user_id):
         # Log the action
         try:
             BaseModel.execute_insert(
-                """INSERT INTO admin_activity_log (admin_id, action, module, target_id, details)
-                   VALUES (%s, %s, %s, %s, %s)""",
-                (admin_user_id, 'activate_user', role, str(user_id), 'Account reactivated')
+                """INSERT INTO admin_activity_log (admin_id, action, module, target_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (admin_user_id, 'activate_user', role, str(user_id))
             )
         except Exception:
             pass
@@ -239,6 +243,71 @@ def activate_user(user_id):
     
     except Exception as e:
         print(f"Activate user error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@admin_bp.route('/users/<int:user_id>/delete', methods=['POST'])
+@jwt_required()
+def delete_user(user_id):
+    """Permanently delete user from database"""
+    try:
+        admin_user_id = get_jwt_identity()
+        admin = BaseModel.execute_query("SELECT *, admin_id as id FROM admins WHERE admin_id = %s", (int(admin_user_id),), fetch_one=True)
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+        
+        data = request.get_json() or {}
+        role = data.get('role', '')
+        
+        deleted = False
+        
+        if role == 'farmer' or not role:
+            result = BaseModel.execute_query("SELECT id, first_name, last_name, email FROM farmers WHERE id = %s", (user_id,), fetch_one=True)
+            if result:
+                # Delete farmer's products first (foreign key constraint)
+                try:
+                    BaseModel.execute_query("DELETE FROM products WHERE farmer_id = %s", (user_id,))
+                except Exception:
+                    pass
+                # Delete farmer's wallet
+                try:
+                    BaseModel.execute_query("DELETE FROM wallet WHERE farmer_id = %s", (user_id,))
+                except Exception:
+                    pass
+                # Delete the farmer
+                BaseModel.execute_query("DELETE FROM farmers WHERE id = %s", (user_id,))
+                deleted = True
+                role = 'farmer'
+        
+        if not deleted and (role == 'buyer' or not role):
+            result = BaseModel.execute_query("SELECT id, first_name, last_name, email FROM buyers WHERE id = %s", (user_id,), fetch_one=True)
+            if result:
+                # Delete buyer's cart items
+                try:
+                    BaseModel.execute_query("DELETE FROM cart_items WHERE buyer_id = %s", (user_id,))
+                except Exception:
+                    pass
+                # Delete the buyer
+                BaseModel.execute_query("DELETE FROM buyers WHERE id = %s", (user_id,))
+                deleted = True
+                role = 'buyer'
+        
+        if not deleted:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Log the action
+        try:
+            BaseModel.execute_insert(
+                """INSERT INTO admin_activity_log (admin_id, action, module, target_id)
+                   VALUES (%s, %s, %s, %s)""",
+                (admin_user_id, 'delete_user', role, str(user_id))
+            )
+        except Exception:
+            pass
+        
+        return jsonify({'message': f'User permanently deleted'}), 200
+    
+    except Exception as e:
+        print(f"Delete user error: {e}")
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
@@ -381,7 +450,7 @@ def get_all_products():
         """
         params = []
         if status_filter:
-            query += " WHERE p.approval_status = %s"
+            query += " WHERE p.status = %s"
             params.append(status_filter)
         query += " ORDER BY p.created_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -426,7 +495,7 @@ def get_pending_products():
         SELECT p.*, f.first_name, f.last_name, f.phone as farmer_phone
         FROM products p
         LEFT JOIN farmers f ON p.farmer_id = f.id
-        WHERE p.approval_status = 'pending'
+        WHERE p.status = 'pending'
         ORDER BY p.created_at ASC
         LIMIT %s OFFSET %s
         """
@@ -469,18 +538,17 @@ def approve_product(product_id):
         if not product:
             return jsonify({'error': 'Product not found'}), 404
 
-        # Update approval_status
         BaseModel.execute_query(
-            "UPDATE products SET approval_status = 'approved', status = 'approved' WHERE id = %s",
+            "UPDATE products SET status = 'approved' WHERE id = %s",
             (product_id,)
         )
 
         # Log activity
         try:
             admin_user_id = get_jwt_identity()
-            BaseModel.execute_query(
-                "INSERT INTO admin_activity_log (admin_id, action, details) VALUES (%s, %s, %s)",
-                (int(admin_user_id), 'approve_product', f'Product {product_id} ({product["name"]}) approved')
+            BaseModel.execute_insert(
+                "INSERT INTO admin_activity_log (admin_id, action, module, target_id) VALUES (%s, %s, %s, %s)",
+                (int(admin_user_id), 'approve_product', 'products', str(product_id))
             )
         except:
             pass
@@ -506,15 +574,15 @@ def reject_product(product_id):
         reason = data.get('reason', 'Product does not meet guidelines')
 
         BaseModel.execute_query(
-            "UPDATE products SET approval_status = 'rejected', status = 'rejected', rejection_reason = %s WHERE id = %s",
-            (reason, product_id)
+            "UPDATE products SET status = 'rejected' WHERE id = %s",
+            (product_id,)
         )
 
         try:
             admin_user_id = get_jwt_identity()
-            BaseModel.execute_query(
-                "INSERT INTO admin_activity_log (admin_id, action, details) VALUES (%s, %s, %s)",
-                (int(admin_user_id), 'reject_product', f'Product {product_id} ({product["name"]}) rejected: {reason}')
+            BaseModel.execute_insert(
+                "INSERT INTO admin_activity_log (admin_id, action, module, target_id) VALUES (%s, %s, %s, %s)",
+                (int(admin_user_id), 'reject_product', 'products', str(product_id))
             )
         except:
             pass
@@ -543,7 +611,7 @@ def analytics_revenue():
         start_date = datetime.now() - timedelta(days=days)
         
         query = """
-        SELECT DATE(o.created_at) as date, SUM(o.final_price) as daily_revenue, COUNT(*) as order_count
+        SELECT DATE(o.created_at) as date, SUM(o.total_amount) as daily_revenue, COUNT(*) as order_count
         FROM orders o
         WHERE o.created_at >= %s AND o.status = 'delivered'
         GROUP BY DATE(o.created_at)
@@ -578,8 +646,8 @@ def analytics_orders():
         SELECT 
             status,
             COUNT(*) as count,
-            AVG(final_price) as avg_price,
-            SUM(final_price) as total_price
+            AVG(total_amount) as avg_price,
+            SUM(total_amount) as total_price
         FROM orders
         WHERE created_at >= %s
         GROUP BY status
@@ -609,16 +677,20 @@ def analytics_users():
         days = request.args.get('days', 30, type=int)
         start_date = datetime.now() - timedelta(days=days)
         
-        query = """
-        SELECT 
-            role_name,
-            COUNT(*) as count
-        FROM users
-        WHERE created_at >= %s
-        GROUP BY role_name
-        """
+        # Count from farmers and buyers tables directly
+        farmer_count = BaseModel.execute_query(
+            "SELECT COUNT(*) as count FROM farmers WHERE created_at >= %s",
+            (start_date,), fetch_one=True
+        )
+        buyer_count = BaseModel.execute_query(
+            "SELECT COUNT(*) as count FROM buyers WHERE created_at >= %s",
+            (start_date,), fetch_one=True
+        )
         
-        analytics = BaseModel.execute_query(query, (start_date,), fetch_all=True)
+        analytics = [
+            {'role_name': 'farmer', 'count': farmer_count['count'] if farmer_count else 0},
+            {'role_name': 'buyer', 'count': buyer_count['count'] if buyer_count else 0}
+        ]
         
         return jsonify({
             'period_days': days,
@@ -681,8 +753,8 @@ def resolve_dispute(dispute_id):
         resolution = data.get('resolution', '')
         
         BaseModel.execute_query(
-            "UPDATE disputes SET status = %s, resolution = %s, resolved_at = %s WHERE id = %s",
-            ('resolved', resolution, datetime.now(), dispute_id)
+            "UPDATE disputes SET status = %s, resolution = %s WHERE id = %s",
+            ('resolved', resolution, dispute_id)
         )
         
         return jsonify({'message': 'Dispute resolved successfully'}), 200
@@ -798,9 +870,11 @@ def get_activity_feed():
         # 2. Recent receipts/purchases
         try:
             receipts = BaseModel.execute_query(
-                """SELECT r.id, r.receipt_id, r.buyer_name, r.farmer_name,
+                """SELECT r.id, r.receipt_id, r.buyer_name,
+                          CONCAT(f.first_name, ' ', f.last_name) as farmer_name,
                           r.grand_total, r.payment_type, r.created_at
                    FROM receipts r
+                   LEFT JOIN farmers f ON r.farmer_id = f.id
                    ORDER BY r.created_at DESC LIMIT 20""",
                 fetch_all=True
             ) or []
@@ -864,16 +938,14 @@ def get_all_receipts():
 
         receipts = BaseModel.execute_query(
             """SELECT r.id, r.receipt_id, r.buyer_id, r.farmer_id,
-                      r.subtotal, r.discount, r.tax_amount, r.grand_total,
+                      r.subtotal, r.discount, r.grand_total,
                       r.payment_type, r.payment_status,
                       COALESCE(r.buyer_name, CONCAT(b.first_name, ' ', b.last_name)) as buyer_name,
                       r.buyer_phone, r.buyer_email,
-                      COALESCE(r.farmer_name, CONCAT(f.first_name, ' ', f.last_name)) as farmer_name,
-                      r.farmer_phone, r.farmer_email,
-                      r.created_at,
-                      ri.product_name, ri.quantity_kg, ri.price_per_kg, ri.item_total
+                      CONCAT(f.first_name, ' ', f.last_name) as farmer_name,
+                      f.phone as farmer_phone, f.email as farmer_email,
+                      r.created_at
                FROM receipts r
-               LEFT JOIN receipt_items ri ON r.id = ri.receipt_id
                LEFT JOIN farmers f ON r.farmer_id = f.id
                LEFT JOIN buyers b ON r.buyer_id = b.id
                ORDER BY r.created_at DESC
@@ -960,3 +1032,94 @@ def get_buyer_profiles():
     except Exception as e:
         print(f"Get buyer profiles error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# PLATFORM EARNINGS (Admin Only - Revenue Split Dashboard)
+# ============================================================================
+
+@admin_bp.route('/platform-earnings', methods=['GET'])
+@jwt_required()
+def get_platform_earnings():
+    """
+    Admin-only: View platform earnings breakdown.
+    Shows: Total revenue, GST collected, Platform fees (hidden 2%), Farmer payouts.
+    """
+    try:
+        user_id = get_jwt_identity()
+        admin = BaseModel.execute_query(
+            "SELECT *, admin_id as id FROM admins WHERE admin_id = %s",
+            (int(user_id),), fetch_one=True
+        )
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        days = request.args.get('days', 30, type=int)
+        
+        # Summary totals
+        summary = BaseModel.execute_query(
+            """SELECT 
+                COUNT(*) as total_orders,
+                COALESCE(SUM(total_amount), 0) as total_revenue,
+                COALESCE(SUM(gst_amount), 0) as total_gst,
+                COALESCE(SUM(platform_fee), 0) as total_platform_fee,
+                COALESCE(SUM(farmer_payout), 0) as total_farmer_payout
+               FROM platform_earnings
+               WHERE created_at >= NOW() - INTERVAL '%s days'""" % days,
+            fetch_one=True
+        ) or {}
+
+        # Per-order breakdown (recent 50)
+        orders = BaseModel.execute_query(
+            """SELECT pe.*, 
+                      CONCAT(f.first_name, ' ', f.last_name) as farmer_name,
+                      CONCAT(b.first_name, ' ', b.last_name) as buyer_name
+               FROM platform_earnings pe
+               LEFT JOIN farmers f ON pe.farmer_id = f.id
+               LEFT JOIN buyers b ON pe.buyer_id = b.id
+               ORDER BY pe.created_at DESC
+               LIMIT 50""",
+            fetch_all=True
+        ) or []
+
+        return jsonify({
+            'success': True,
+            'summary': serialize_row(summary),
+            'earnings': serialize_rows(orders),
+            'period_days': days,
+            'rates': {
+                'gst_rate': 1.0,
+                'platform_fee_rate': 2.0,
+                'farmer_payout_rate': 97.0,
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Platform earnings error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_bp.route('/platform-earnings/settle/<int:earning_id>', methods=['POST'])
+@jwt_required()
+def settle_earning(earning_id):
+    """Admin marks a farmer payout as settled (paid to farmer)."""
+    try:
+        user_id = get_jwt_identity()
+        admin = BaseModel.execute_query(
+            "SELECT *, admin_id as id FROM admins WHERE admin_id = %s",
+            (int(user_id),), fetch_one=True
+        )
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        BaseModel.execute_query(
+            "UPDATE platform_earnings SET settlement_status = 'settled', settled_at = NOW() WHERE id = %s",
+            (earning_id,)
+        )
+
+        return jsonify({'success': True, 'message': 'Marked as settled'}), 200
+
+    except Exception as e:
+        print(f"Settle earning error: {e}")
+        return jsonify({'error': str(e)}), 500
+

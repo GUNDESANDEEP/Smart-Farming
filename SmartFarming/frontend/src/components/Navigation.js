@@ -38,6 +38,7 @@ const Navigation = () => {
     ],
     admin: [
       { name: 'Dashboard', path: '/admin' },
+      { name: 'SaaS', path: '/admin/saas' },
       { name: 'Users', path: '/admin/users' },
       { name: 'Products', path: '/admin/products' },
       { name: 'Orders', path: '/admin/orders' },

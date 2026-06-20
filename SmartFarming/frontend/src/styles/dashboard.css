@@ -1336,3 +1336,122 @@
     text-align: left;
   }
 }
+
+/* ═══ Low Stock & Sold Out Animations ═══ */
+@keyframes lowStockPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.05); }
+}
+
+/* ═══ Stock Ticker (Buyer Shop) ═══ */
+.stock-ticker-wrapper {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #fef2f2, #fff1f2);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  border-radius: 12px;
+  padding: 10px 0;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 12px rgba(239, 68, 68, 0.06);
+}
+
+.stock-ticker-wrapper::before {
+  content: '🔥 SELLING FAST';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  color: white;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  z-index: 2;
+  border-radius: 12px 0 0 12px;
+}
+
+.stock-ticker-track {
+  display: flex;
+  animation: tickerScroll 30s linear infinite;
+  padding-left: 140px;
+}
+
+.stock-ticker-track:hover {
+  animation-play-state: paused;
+}
+
+.stock-ticker-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 0 24px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #991b1b;
+}
+
+.stock-ticker-item .ticker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: lowStockPulse 1.5s infinite;
+}
+
+.stock-ticker-item .ticker-qty {
+  background: rgba(239, 68, 68, 0.12);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  color: #dc2626;
+  font-weight: 700;
+}
+
+@keyframes tickerScroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* ═══ Sold Out Badge (Buyer Shop) ═══ */
+.sold-out-badge-buyer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+}
+
+.sold-out-badge-buyer span {
+  background: #dc2626;
+  color: white;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 0.9rem;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  transform: rotate(-8deg);
+}
+
+.low-stock-indicator-buyer {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: linear-gradient(135deg, #dc2626, #f97316);
+  color: white;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  z-index: 4;
+  animation: lowStockPulse 2s infinite;
+}
