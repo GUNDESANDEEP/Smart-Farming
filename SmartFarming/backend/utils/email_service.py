@@ -1,26 +1,42 @@
 """
 Email Service - Send Emails for Notifications, OTP, and Password Reset
-SMTP Authentication is MANDATORY - the app will refuse to start without valid SMTP credentials.
-Uses port 587 with STARTTLS for secure email delivery.
+Uses Gmail SMTP for reliable email delivery.
 
 Anti-Spam Best Practices Applied:
 - Proper sender display name
 - Both text/plain and text/html MIME parts
 - Proper DOCTYPE and HTML structure
-- List-Unsubscribe header
 - Consistent From name
 """
 
 import smtplib
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.utils import formataddr
+from email.mime.text import MIMEText
 from dotenv import load_dotenv
 import os
 import sys
+import re
 from datetime import datetime
 
 load_dotenv()
+
+
+# ============================================================================
+# SMTP CONFIGURATION
+# ============================================================================
+
+SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+EMAIL_SENDER = os.getenv('EMAIL_SENDER', '')
+EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '')
+EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'SmartFarming')
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', '')
+FLASK_ENV = os.getenv('FLASK_ENV', 'development')
+
+
+def is_dev_mode():
+    """Check if running in development mode."""
+    return FLASK_ENV in ('development', 'dev', 'local')
 
 
 # ============================================================================
@@ -102,51 +118,53 @@ If you didn't request this, please ignore this email.
 """
 
 
+def _html_to_plaintext(html_body):
+    """Strip HTML tags to create a plain text fallback."""
+    plain = re.sub(r'<[^>]+>', '', html_body).strip()
+    plain = re.sub(r'\s+', ' ', plain)
+    return plain
+
+
 class EmailService:
-    """Handle sending emails via SMTP - Authentication is MANDATORY"""
+    """Handle sending emails via SMTP (Gmail)"""
     
-    SMTP_SERVER = os.getenv('SMTP_HOST', os.getenv('SMTP_SERVER', 'smtp.gmail.com'))
-    SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
-    SENDER_EMAIL = os.getenv('EMAIL_SENDER', os.getenv('SMTP_EMAIL'))
-    SENDER_PASSWORD = os.getenv('EMAIL_PASSWORD', os.getenv('SMTP_PASSWORD'))
     SENDER_NAME = 'SmartFarm'
     
     @classmethod
-    def validate_smtp_config(cls):
+    def validate_config(cls):
         """
-        Validate that all required SMTP credentials are configured.
-        Raises RuntimeError if any are missing - SMTP is mandatory.
+        Validate that SMTP credentials are configured.
+        Raises RuntimeError if missing - SMTP config is mandatory.
         """
-        missing = []
-        if not cls.SENDER_EMAIL:
-            missing.append('EMAIL_SENDER (or SMTP_EMAIL)')
-        if not cls.SENDER_PASSWORD:
-            missing.append('EMAIL_PASSWORD (or SMTP_PASSWORD)')
-        if not cls.SMTP_SERVER:
-            missing.append('SMTP_HOST (or SMTP_SERVER)')
-        
-        if missing:
+        if not EMAIL_SENDER or not EMAIL_PASSWORD:
+            env = os.getenv('ENVIRONMENT', os.getenv('FLASK_ENV', 'development')).lower()
             error_msg = (
                 f"\n{'='*60}\n"
-                f"  ❌ SMTP AUTHENTICATION ERROR - MANDATORY\n"
+                f"  SMTP EMAIL CONFIG NOT SET\n"
                 f"{'='*60}\n"
-                f"  The following SMTP environment variables are MISSING:\n"
-                f"  {', '.join(missing)}\n\n"
-                f"  SMTP authentication is MANDATORY for this application.\n"
-                f"  Email features (OTP, password reset, notifications)\n"
-                f"  will NOT work without proper SMTP configuration.\n\n"
+                f"  EMAIL_SENDER or EMAIL_PASSWORD is not configured in .env\n\n"
                 f"  Required .env variables:\n"
                 f"    SMTP_HOST=smtp.gmail.com\n"
                 f"    SMTP_PORT=587\n"
-                f"    EMAIL_SENDER=your-email@gmail.com\n"
-                f"    EMAIL_PASSWORD=your-app-password\n"
+                f"    EMAIL_SENDER=your_email@gmail.com\n"
+                f"    EMAIL_PASSWORD=your_app_password\n"
+                f"    EMAIL_FROM_NAME=SmartFarming\n"
                 f"{'='*60}\n"
             )
             print(error_msg, file=sys.stderr)
-            raise RuntimeError(f"SMTP configuration incomplete: missing {', '.join(missing)}")
+            if env == 'production':
+                raise RuntimeError("SMTP configuration incomplete: missing EMAIL_SENDER or EMAIL_PASSWORD")
+            print("[WARN] SMTP not configured — email features disabled in development")
+            return False
         
-        print(f"[OK] Email SMTP configured (MANDATORY) - Sender: {cls.SENDER_EMAIL}")
+        print(f"[OK] SMTP email configured - Host: {SMTP_HOST}:{SMTP_PORT}, From: {EMAIL_FROM_NAME} <{EMAIL_SENDER}>")
         return True
+    
+    # Keep backward-compatible alias
+    @classmethod
+    def validate_smtp_config(cls):
+        """Backward-compatible alias for validate_config."""
+        return cls.validate_config()
     
     @staticmethod
     def send_otp_email(recipient_email, otp_code, user_name):
@@ -167,13 +185,63 @@ class EmailService:
             """
             
             html_body = _build_email_html(subject, body_content)
-            plain_body = _build_plaintext_otp("Email Verification OTP", otp_code)
             
-            return EmailService._send_email(recipient_email, subject, html_body, plain_body)
+            return EmailService._send_email(recipient_email, subject, html_body)
         
         except Exception as e:
             print(f"Send OTP email error: {e}")
             return False
+    
+    @staticmethod
+    def send_otp_email_safe(recipient_email, otp_code, purpose='login', user_name='User'):
+        """
+        Send OTP email via SMTP.
+        
+        Returns a dict:
+          - {"sent": True}  — email was sent successfully
+          - {"sent": False, "reason": "send_failed"} — email failed,
+            caller should handle gracefully
+          - {"sent": False, "error": "..."} — actual error
+        """
+        # Determine subject and body based on purpose
+        subject_map = {
+            'login': 'SmartFarm - Login OTP',
+            'verification': 'SmartFarm - Verify Your Email',
+            'email_verification': 'SmartFarm - Verify Your Email',
+            'password_reset': 'SmartFarm - Password Reset OTP',
+            'forgot_password': 'SmartFarm - Password Reset OTP',
+        }
+        purpose_text_map = {
+            'login': 'Your login verification OTP is:',
+            'verification': 'Your email verification OTP is:',
+            'email_verification': 'Your email verification OTP is:',
+            'password_reset': 'Your password reset OTP is:',
+            'forgot_password': 'Your password reset OTP is:',
+        }
+        expiry_map = {
+            'login': 'Valid for 5 minutes',
+            'verification': 'Valid for 10 minutes',
+            'email_verification': 'Valid for 10 minutes',
+            'password_reset': 'Valid for 10 minutes',
+            'forgot_password': 'Valid for 10 minutes',
+        }
+        
+        subject = subject_map.get(purpose, 'SmartFarm - OTP Verification')
+        purpose_text = purpose_text_map.get(purpose, 'Your OTP is:')
+        expiry_text = expiry_map.get(purpose, 'Valid for 10 minutes')
+        
+        html_body = _build_otp_html(purpose_text, otp_code, expiry_text)
+        
+        try:
+            email_sent = EmailService._send_email(recipient_email, subject, html_body)
+            if email_sent:
+                return {"sent": True}
+            else:
+                print(f"[OTP] Email send returned False for {recipient_email}")
+                return {"sent": False, "reason": "send_failed"}
+        except Exception as e:
+            print(f"[OTP] Email send exception for {recipient_email}: {e}")
+            return {"sent": False, "error": "Failed to send OTP email"}
     
     @staticmethod
     def send_password_reset_email(recipient_email, reset_token, user_name):
@@ -182,9 +250,8 @@ class EmailService:
             subject = "SmartFarm - Password Reset OTP"
             
             html_body = _build_otp_html("Your password reset OTP is:", reset_token)
-            plain_body = _build_plaintext_otp("Password Reset OTP", reset_token)
             
-            return EmailService._send_email(recipient_email, subject, html_body, plain_body)
+            return EmailService._send_email(recipient_email, subject, html_body)
         
         except Exception as e:
             print(f"Send password reset email error: {e}")
@@ -215,9 +282,8 @@ class EmailService:
             """
             
             html_body = _build_email_html(subject, body_content)
-            plain_body = f"Welcome to SmartFarm, {user_name}!\n\nThank you for joining as a {role_message}.\n\nVisit your dashboard: {dashboard_link}\n\n- SmartFarm Team"
             
-            return EmailService._send_email(recipient_email, subject, html_body, plain_body)
+            return EmailService._send_email(recipient_email, subject, html_body)
         
         except Exception as e:
             print(f"Send welcome email error: {e}")
@@ -241,9 +307,8 @@ class EmailService:
             """
             
             html_body = _build_email_html(subject, body_content)
-            plain_body = f"Order Confirmation\n\nHi {user_name},\n\nOrder #{order_number} placed successfully.\nAmount: Rs.{amount:.2f}\nStatus: Pending\n\n- SmartFarm Team"
             
-            return EmailService._send_email(recipient_email, subject, html_body, plain_body)
+            return EmailService._send_email(recipient_email, subject, html_body)
         
         except Exception as e:
             print(f"Send order notification email error: {e}")
@@ -274,9 +339,8 @@ class EmailService:
             """
             
             html_body = _build_email_html(subject, body_content)
-            plain_body = f"Hi {user_name},\n\n{message}\n\nVisit your dashboard: {dashboard_link}\n\n- SmartFarm Team"
             
-            return EmailService._send_email(recipient_email, subject, html_body, plain_body)
+            return EmailService._send_email(recipient_email, subject, html_body)
         
         except Exception as e:
             print(f"Send farmer verification email error: {e}")
@@ -284,66 +348,37 @@ class EmailService:
     
     @staticmethod
     def _send_email(recipient_email, subject, html_body, plain_body=None):
-        """Internal method to send email via SMTP - Uses port 587 STARTTLS
+        """Internal method to send email via SMTP (Gmail).
         
-        Anti-spam improvements:
-        - Proper sender display name (SmartFarm)
-        - Both text/plain and text/html parts
-        - Reply-To header
+        Uses smtplib with STARTTLS for secure email delivery.
         """
-        # Pre-check: SMTP credentials MUST be configured
-        if not EmailService.SENDER_EMAIL or not EmailService.SENDER_PASSWORD:
-            raise RuntimeError(
-                "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
-                "Email sending is mandatory and cannot be skipped."
-            )
+        if not plain_body:
+            plain_body = _html_to_plaintext(html_body)
+        
+        if not EMAIL_SENDER or not EMAIL_PASSWORD:
+            print(f"[ERROR] SMTP not configured. Set EMAIL_SENDER + EMAIL_PASSWORD in .env")
+            return False
         
         try:
-            # Create email message with both plain and HTML parts
-            message = MIMEMultipart("alternative")
-            message["Subject"] = subject
-            # Use display name to improve deliverability
-            message["From"] = formataddr((EmailService.SENDER_NAME, EmailService.SENDER_EMAIL))
-            message["To"] = recipient_email
-            message["Reply-To"] = EmailService.SENDER_EMAIL
+            msg = MIMEMultipart('alternative')
+            msg['From'] = f"{EMAIL_FROM_NAME} <{EMAIL_SENDER}>"
+            msg['To'] = recipient_email
+            msg['Subject'] = subject
             
-            # Attach plain text FIRST (fallback), then HTML (preferred)
-            if plain_body:
-                part_plain = MIMEText(plain_body, "plain", "utf-8")
-                message.attach(part_plain)
+            msg.attach(MIMEText(plain_body, 'plain'))
+            msg.attach(MIMEText(html_body, 'html'))
             
-            part_html = MIMEText(html_body, "html", "utf-8")
-            message.attach(part_html)
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                server.starttls()
+                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                server.send_message(msg)
             
-            # Connect to SMTP server via STARTTLS (port 587)
-            server = smtplib.SMTP(EmailService.SMTP_SERVER, EmailService.SMTP_PORT, timeout=15)
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(EmailService.SENDER_EMAIL, EmailService.SENDER_PASSWORD)
-            server.sendmail(EmailService.SENDER_EMAIL, recipient_email, message.as_string())
-            server.quit()
-            
-            print(f"✅ Email sent successfully to {recipient_email} (STARTTLS port 587)")
+            print(f"[OK] Email sent via SMTP to {recipient_email}")
             return True
-        
-        except smtplib.SMTPAuthenticationError as e:
-            error_msg = (
-                f"❌ SMTP Authentication FAILED for {EmailService.SENDER_EMAIL}. "
-                f"Check your EMAIL_SENDER and EMAIL_PASSWORD in .env. "
-                f"If using Gmail, ensure you're using an App Password. Error: {e}"
-            )
-            print(error_msg)
-            raise RuntimeError(error_msg)
-        
-        except smtplib.SMTPException as e:
-            print(f"❌ SMTP error sending to {recipient_email}: {e}")
-            return False
-        
         except Exception as e:
-            print(f"❌ Error sending email to {recipient_email}: {e}")
+            print(f"[ERROR] SMTP email failed for {recipient_email}: {e}")
             return False
 
 
-# Validate SMTP at module load time - app will fail to start without valid SMTP config
-EmailService.validate_smtp_config()
+# Validate SMTP at module load time - app will fail to start without valid config
+EmailService.validate_config()

@@ -1,10 +1,46 @@
 import axios from 'axios';
-import jwtDecode from 'jwt-decode';
 import toast from 'react-hot-toast';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
-// Local development (uncomment when running backend locally):
-// const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+// ============================================================================
+// API BASE URL — auto-detect local vs production
+// ============================================================================
+const isBrowserLocalHost = () => {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return host === 'localhost' || host === '127.0.0.1';
+};
+
+export const isRemoteApi = (baseUrl) =>
+  typeof baseUrl === 'string' &&
+  (baseUrl.includes('onrender.com') || baseUrl.startsWith('https://'));
+
+const resolveApiBaseUrl = () => {
+  if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
+  if (isBrowserLocalHost()) return '/api';
+  return 'https://smart-farming-backend.onrender.com/api';
+};
+
+export const API_BASE_URL = resolveApiBaseUrl();
+
+// ============================================================================
+// SERVER WARMUP — wake Render free tier before login/dashboard calls
+// ============================================================================
+let warmupPromise = null;
+
+export const warmupServer = () => {
+  if (!isRemoteApi(API_BASE_URL)) return Promise.resolve(true);
+  if (warmupPromise) return warmupPromise;
+
+  warmupPromise = axios
+    .get(`${API_BASE_URL}/health`, { timeout: 90000 })
+    .then(() => true)
+    .catch(() => false)
+    .finally(() => {
+      warmupPromise = null;
+    });
+
+  return warmupPromise;
+};
 
 
 // ============================================================================
@@ -13,16 +49,16 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-bac
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 15000, // 15s default — balanced for cold starts
+  timeout: isRemoteApi(API_BASE_URL) ? 90000 : 15000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Fast client for buyer reads — 5s timeout, falls back to cache/localStorage
+// Fast client for buyer reads — falls back to cache/localStorage
 const fastClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 5000,
+  timeout: isRemoteApi(API_BASE_URL) ? 30000 : 8000,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -39,7 +75,7 @@ fastClient.interceptors.request.use((config) => {
 const productCache = {
   data: null,
   timestamp: 0,
-  TTL: 60000, // 1 minute cache
+  TTL: 120000, // 2 minute in-memory cache
   get() {
     if (this.data && (Date.now() - this.timestamp) < this.TTL) return this.data;
     // Also try localStorage
@@ -79,29 +115,29 @@ const isTokenExpired = (token) => {
 // ============================================================================
 // RETRY CONFIG — Aggressive retries for Render cold starts
 // ============================================================================
-const RETRY_STATUS_CODES = [502, 503, 504, 0]; // 0 = network error
-const MAX_RETRIES = 2;
-const BASE_RETRY_DELAY = 1000; // 1s, then 2s — much faster fallback
+const RETRY_STATUS_CODES = [502, 503, 504, 0];
+const getMaxRetries = () => (isRemoteApi(API_BASE_URL) ? 6 : 3);
+const BASE_RETRY_DELAY = isRemoteApi(API_BASE_URL) ? 3000 : 1000;
 
-// We now retry ALL URLs including auth — because cold-start failures
-// are not duplicate side-effects, the server never processed the request.
 const shouldRetry = (error, retryCount) => {
-  if (retryCount >= MAX_RETRIES) return false;
+  if (retryCount >= getMaxRetries()) return false;
 
-  // NEVER retry auth requests — they should fail fast
+  const isNetworkOrTimeout =
+    !error.response ||
+    error.code === 'ECONNABORTED' ||
+    error.message?.includes('timeout');
+  const isGateway =
+    error.response && RETRY_STATUS_CODES.includes(error.response.status);
+
+  if (!isNetworkOrTimeout && !isGateway) return false;
+
   const url = error.config?.url || '';
-  if (url.includes('/auth/')) return false;
+  // Don't retry auth when credentials are wrong — only on unreachable server
+  if (url.includes('/auth/') && error.response && error.response.status < 500) {
+    return false;
+  }
 
-  // Only retry on network errors (server sleeping / cold start)
-  if (!error.response) return true;
-
-  // Retry on timeout
-  if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) return true;
-
-  // Retry on server overload / gateway errors
-  if (RETRY_STATUS_CODES.includes(error.response.status)) return true;
-
-  return false;
+  return true;
 };
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -113,10 +149,10 @@ let wakeupToastId = null;
 
 const showWakeupToast = () => {
   if (!wakeupToastId) {
-    wakeupToastId = toast.loading(
-      '☕ Server is waking up... This takes ~30 seconds on free hosting. Please wait.',
-      { duration: 90000, id: 'server-wakeup' }
-    );
+    const message = isRemoteApi(API_BASE_URL)
+      ? 'Connecting to server... first load can take up to a minute on free hosting.'
+      : 'Connecting to local server...';
+    wakeupToastId = toast.loading(message, { duration: 120000, id: 'server-wakeup' });
   }
 };
 
@@ -152,15 +188,16 @@ apiClient.interceptors.request.use(
     if (url.includes('/upload') || config.headers?.['Content-Type']?.includes('multipart')) {
       config.timeout = 60000; // 60s for uploads
     } else if (url.includes('/auth/')) {
-      config.timeout = 8000; // 8s for auth — fail fast
+      config.timeout = isRemoteApi(API_BASE_URL) ? 90000 : 15000;
     }
     // Default 15s handles most requests
 
-    // Only attach the token if no Authorization header is already set
-    // (adminRequest sets its own admin token — don't overwrite it)
+    // Always attach the token if present — let the backend decide validity.
+    // Previously, isTokenExpired() would drop non-JWT tokens (e.g. admin local
+    // tokens) causing 401 → auto-logout loops.
     if (!config.headers.Authorization) {
       const token = localStorage.getItem('access_token');
-      if (token && !isTokenExpired(token)) {
+      if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
     }
@@ -195,7 +232,7 @@ apiClient.interceptors.response.use(
       // Show wakeup toast on first retry
       showWakeupToast();
 
-      console.log(`[API] Retry ${originalRequest._retryCount}/${MAX_RETRIES} in ${retryDelay}ms: ${originalRequest.url}`);
+      console.log(`[API] Retry ${originalRequest._retryCount}/${getMaxRetries()} in ${retryDelay}ms: ${originalRequest.url}`);
       await delay(retryDelay);
       return apiClient(originalRequest);
     }
@@ -206,7 +243,9 @@ apiClient.interceptors.response.use(
     // ── Timeout error ──
     if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
       const timeoutError = new Error(
-        'Server is taking too long to respond. It may be restarting — please try again in 30 seconds.'
+        isRemoteApi(API_BASE_URL)
+          ? 'Server is still starting. Please wait a moment and try again.'
+          : 'Backend is not responding. Run SmartFarming/start-local.bat or start the backend with: cd backend && python main.py'
       );
       timeoutError._isTimeoutError = true;
       return Promise.reject(timeoutError);
@@ -215,7 +254,9 @@ apiClient.interceptors.response.use(
     // ── Network Error (server completely unreachable after retries) ──
     if (!error.response) {
       const networkError = new Error(
-        'Server is currently unavailable. It may be restarting — please try again in a minute.'
+        isRemoteApi(API_BASE_URL)
+          ? 'Could not reach the server. Please check your internet connection and try again.'
+          : 'Backend is not running. Double-click SmartFarming/start-local.bat to start both servers.'
       );
       networkError._isNetworkError = true;
       return Promise.reject(networkError);
@@ -226,6 +267,22 @@ apiClient.interceptors.response.use(
       // Don't try to refresh for login/register/refresh requests themselves
       const url = originalRequest.url || '';
       if (url.includes('/auth/login') || url.includes('/auth/register') || url.includes('/auth/refresh')) {
+        return Promise.reject(error);
+      }
+
+      // Don't auto-logout for non-critical API calls that may not exist
+      // These should fail gracefully without destroying the user's session
+      const nonCriticalPaths = ['/checkout/', '/farmer-orders', '/wallet', '/order-flow', '/orders/'];
+      if (nonCriticalPaths.some(p => url.includes(p))) {
+        console.warn(`[API] 401 on non-critical endpoint ${url} — not logging out`);
+        return Promise.reject(error);
+      }
+
+      // Grace period: don't auto-logout within 10 seconds of login
+      // This prevents the dashboard's initial API calls from triggering logout
+      const loginTimestamp = parseInt(localStorage.getItem('login_timestamp') || '0', 10);
+      if (Date.now() - loginTimestamp < 10000) {
+        console.warn('[API] 401 received within login grace period — not logging out');
         return Promise.reject(error);
       }
 
@@ -314,12 +371,16 @@ export const getErrorMessage = (error) => {
 
   // Timeout
   if (error?._isTimeoutError || error?.code === 'ECONNABORTED') {
-    return 'Server is taking too long. It may be restarting — please try again in 30 seconds.';
+    return isRemoteApi(API_BASE_URL)
+      ? 'Server is still starting. Please wait a moment and try again.'
+      : 'Backend is not responding. Run SmartFarming/start-local.bat to start the servers.';
   }
 
   // Network error (server down / cold start exhausted)
   if (error?._isNetworkError || !error?.response) {
-    return 'Server is currently unavailable. It may be restarting — please try again in a minute.';
+    return isRemoteApi(API_BASE_URL)
+      ? 'Could not reach the server. Check your connection and try again.'
+      : 'Backend is not running. Run SmartFarming/start-local.bat to start both servers.';
   }
 
   const status = error.response?.status;
@@ -330,6 +391,11 @@ export const getErrorMessage = (error) => {
   // 503 — Server warming up (DB connection issue)
   if (status === 503 || errorCode === 'database_error') {
     return 'Server is warming up. Please wait 30 seconds and try again.';
+  }
+
+  // 404 — endpoint or resource not found
+  if (status === 404) {
+    return errorMsg || 'Resource not found. Please refresh and try again.';
   }
 
   // 401 — Authentication errors (use backend message directly)
@@ -387,26 +453,21 @@ export const authAPI = {
 // ADMIN TOKEN HELPER — deployed backend requires admin for product CRUD
 // ============================================================================
 
-let cachedAdminToken = null;
+let cachedAdminToken = null; // eslint-disable-line no-unused-vars
 
 const getAdminToken = async () => {
-  if (cachedAdminToken) {
-    // Check if still valid
+  // Use the current user's token if they are admin
+  const currentToken = localStorage.getItem('access_token');
+  if (currentToken) {
     try {
-      const payload = JSON.parse(atob(cachedAdminToken.split('.')[1]));
-      if (payload.exp * 1000 > Date.now() + 60000) return cachedAdminToken;
+      const payload = JSON.parse(atob(currentToken.split('.')[1]));
+      if (payload.role === 'admin' && payload.exp * 1000 > Date.now() + 60000) {
+        return currentToken;
+      }
     } catch {}
   }
-  try {
-    const res = await axios.post(`${API_BASE_URL}/auth/login`, {
-      email: 'admin@example.com',
-      password: 'admin123',
-    });
-    cachedAdminToken = res.data.token || res.data.access_token;
-    return cachedAdminToken;
-  } catch {
-    return localStorage.getItem('access_token'); // fallback to user token
-  }
+  // Fallback: return whatever token we have (server will validate)
+  return currentToken;
 };
 
 const adminRequest = async (method, url, data) => {
@@ -431,6 +492,10 @@ const buildProductFormData = (data) => {
   fd.append('price', String(data.price || 0));
   fd.append('stockQuantity', String(data.stockQuantity || data.quantity || 0));
   if (data.category) fd.append('category', data.category);
+  if (data.unit) fd.append('unit', data.unit);
+  if (data.location) fd.append('location', data.location);
+  if (data.discount_percentage) fd.append('discount_percentage', String(data.discount_percentage));
+  if (data.is_organic !== undefined) fd.append('is_organic', String(data.is_organic));
   
   // Handle image — if a File object, use it; otherwise create a tiny placeholder
   if (data.imageFile instanceof File) {
@@ -461,30 +526,22 @@ export const farmerAPI = {
     totalProducts: 0, totalOrders: 0, totalRevenue: 0, totalCustomers: 0,
     recentOrders: [], topProducts: [], monthlySales: [],
   }),
-  
-  // Products — deployed backend uses /products/create, requires admin + multipart form
-  createProduct: (data) => adminRequest('post', '/products/create', buildProductFormData(data)),
+
+  createProduct: (data) => apiClient.post('/farmer/products', data),
   getProducts: (page = 1, limit = 20) =>
-    apiClient.get('/products', { params: { page, limit } }),
-  getProductDetail: (id) => apiClient.get(`/products/${id}`),
-  updateProduct: (id, data) => adminRequest('put', `/products/update/${id}`, data),
-  deleteProduct: (id) => adminRequest('delete', `/products/${id}`),
-  
-  // Orders — deployed backend requires admin token for /orders
-  getOrders: (page = 1, limit = 20) =>
-    adminRequest('get', '/orders', null).then(res => {
-      // Filter by user or return all
-      const orders = Array.isArray(res.data) ? res.data : (res.data?.orders || []);
-      return { data: { orders, total: orders.length } };
-    }).catch(() => ({ data: { orders: [], total: 0 } })),
-  getOrderDetail: (id) => safeGet(`/orders/${id}`, {}),
-  updateOrderStatus: (id, status, description = '') => 
-    adminRequest('post', `/orders/${id}/update-status`, { status, description })
-      .catch(() => ({ data: { message: 'Status update not available' } })),
-  acceptOrder: (id) => adminRequest('post', `/orders/${id}/accept`, {})
-    .catch(() => ({ data: { message: 'Accept not available' } })),
-  rejectOrder: (id, reason) => adminRequest('post', `/orders/${id}/reject`, { reason })
-    .catch(() => ({ data: { message: 'Reject not available' } })),
+    apiClient.get('/farmer/products', { params: { page, limit } }),
+  getProductDetail: (id) => apiClient.get(`/farmer/products/${id}`),
+  updateProduct: (id, data) => apiClient.put(`/farmer/products/${id}`, data),
+  deleteProduct: (id) => apiClient.delete(`/farmer/products/${id}`),
+
+  getOrders: (page = 1, limit = 20, status) =>
+    apiClient.get('/farmer/orders', { params: { page, limit, status } })
+      .catch(() => ({ data: { orders: [], total: 0 } })),
+  getOrderDetail: (id) => apiClient.get(`/farmer/orders/${id}`),
+  updateOrderStatus: (id, status, description = '') =>
+    apiClient.put(`/farmer/orders/${id}/status`, { status, description }),
+  acceptOrder: (id) => apiClient.post(`/farmer/orders/${id}/accept`, {}),
+  rejectOrder: (id, reason) => apiClient.post(`/farmer/orders/${id}/reject`, { reason }),
   
   // Delivery OTP
   sendDeliveryOtp: (id) => apiClient.post(`/orders/${id}/send-delivery-otp`)
@@ -531,20 +588,16 @@ export const farmerAPI = {
 export const buyerAPI = {
   // Products — fast fetch with cache fallback
   getProducts: (page = 1, limit = 20, filters = {}) => {
-    // Return cache immediately while fetching in background
     const cached = productCache.get();
-    const fetchPromise = fastClient.get('/products', { params: { page, limit, ...filters } })
+    const fetchPromise = fastClient.get('/buyer/products', { params: { page, limit, ...filters } })
       .then(res => {
-        // Cache the successful response
         if (res.data) productCache.set(res.data);
         return res;
       })
       .catch(() => {
-        // If fast fetch fails, try main client
-        return apiClient.get('/products', { params: { page, limit, ...filters } })
+        return apiClient.get('/buyer/products', { params: { page, limit, ...filters } })
           .then(res => { if (res.data) productCache.set(res.data); return res; })
           .catch(() => {
-            // Return cache if available
             if (cached) return { data: cached };
             return { data: { products: [], data: [], pagination: { total: 0 } } };
           });
@@ -559,11 +612,11 @@ export const buyerAPI = {
     return fetchPromise;
   },
   searchProducts: (query, page = 1, limit = 20) =>
-    fastClient.get('/products', { params: { search: query, page, limit } })
-      .catch(() => apiClient.get('/products', { params: { search: query, page, limit } })
+    fastClient.get('/buyer/products/search', { params: { q: query, page, limit } })
+      .catch(() => apiClient.get('/buyer/products/search', { params: { q: query, page, limit } })
         .catch(() => ({ data: { products: [], data: [], pagination: { total: 0 } } }))),
-  getProductDetail: (id) => fastClient.get(`/products/${id}`)
-    .catch(() => apiClient.get(`/products/${id}`).catch(() => ({ data: {} }))),
+  getProductDetail: (id) => fastClient.get(`/buyer/products/${id}`)
+    .catch(() => apiClient.get(`/buyer/products/${id}`).catch(() => ({ data: {} }))),
   
   // Cart — doesn't exist on deployed backend, use localStorage
   getCart: () => {
@@ -597,13 +650,11 @@ export const buyerAPI = {
   },
   
   // Orders — fast fetch with graceful fallback
-  createOrder: (data) => adminRequest('post', '/orders', data)
-    .catch(() => ({ data: { message: 'Order creation not available' } })),
+  createOrder: (data) => apiClient.post('/buyer/orders', data),
   getOrders: (page = 1, limit = 20) => {
-    // Try cached orders first
     const cachedOrders = JSON.parse(localStorage.getItem('buyer_orders_cache') || 'null');
-    return adminRequest('get', '/orders', null).then(res => {
-      const orders = Array.isArray(res.data) ? res.data : (res.data?.orders || []);
+    return apiClient.get('/buyer/orders', { params: { page, limit } }).then(res => {
+      const orders = res.data?.orders || (Array.isArray(res.data) ? res.data : []);
       const result = { data: { orders, total: orders.length } };
       localStorage.setItem('buyer_orders_cache', JSON.stringify(result.data));
       return result;
@@ -617,8 +668,7 @@ export const buyerAPI = {
     .catch(() => ({ data: { message: 'Cancel not available' } })),
   
   // Order Flow
-  checkout: (data) => adminRequest('post', '/orders/checkout', data)
-    .catch(() => ({ data: { message: 'Checkout not available' } })),
+  checkout: (data) => apiClient.post('/orders/checkout', data),
   getOrderTracking: (id) => safeGet(`/orders/${id}/tracking`, { status: 'pending', steps: [] }),
   submitReview: (orderId, data) => apiClient.post(`/orders/${orderId}/review`, data)
     .catch(() => ({ data: { message: 'Review submitted locally' } })),
@@ -745,18 +795,13 @@ export const adminAPI = {
   
   // Users — THIS WORKS
   getUsers: (page = 1, limit = 20, filters = {}) =>
-    adminRequest('get', '/admin/users', null).then(res => {
-      // API returns {farmers:[], buyers:[], ...} — pass it through
-      return { data: res.data };
-    }),
+    apiClient.get('/admin/users', { params: { page, limit, ...filters } }),
   getUserDetail: (id) => safeGet(`/admin/users/${id}`, {}),
   suspendUser: (id, role) => apiClient.post(`/admin/users/${id}/suspend`, { role })
     .catch(() => ({ data: { message: 'Suspend not available' } })),
   activateUser: (id, role) => apiClient.post(`/admin/users/${id}/activate`, { role })
     .catch(() => ({ data: { message: 'Activate not available' } })),
-  deleteUser: (id, role) => {
-    return adminRequest('post', `/admin/users/${id}/delete`, { role });
-  },
+  deleteUser: (id, role) => apiClient.post(`/admin/users/${id}/delete`, { role }),
   
   // Farmer Verification — doesn't exist
   getPendingFarmers: () => safeGet('/admin/farmers/pending-verification', []),
@@ -765,17 +810,15 @@ export const adminAPI = {
   rejectFarmer: (id, reason) => apiClient.post(`/admin/farmers/${id}/reject`, { reason })
     .catch(() => ({ data: { message: 'Rejection not available' } })),
   
-  // Product Approval — use /products endpoint
-  getAllProducts: (status) => 
-    apiClient.get('/products', { params: status ? { status } : {} }).then(res => {
-      const products = Array.isArray(res.data) ? res.data : (res.data?.products || []);
+  // Product Approval — use /products endpoint (deployed backend)
+  getAllProducts: (status) =>
+    apiClient.get('/admin/products/all', { params: status ? { status } : {} }).then(res => {
+      const products = res.data?.products || (Array.isArray(res.data) ? res.data : []);
       return { data: products };
     }),
-  getPendingProducts: () => safeGet('/admin/products/pending-approval', []),
-  approveProduct: (id) => adminRequest('put', `/products/update/${id}`, { status: 'approved' })
-    .catch(() => ({ data: { message: 'Approval not available' } })),
-  rejectProduct: (id, reason) => adminRequest('put', `/products/update/${id}`, { status: 'rejected', rejectReason: reason })
-    .catch(() => ({ data: { message: 'Rejection not available' } })),
+  getPendingProducts: () => apiClient.get('/admin/products/pending-approval'),
+  approveProduct: (id) => apiClient.post(`/admin/products/${id}/approve`),
+  rejectProduct: (id, reason) => apiClient.post(`/admin/products/${id}/reject`, { reason }),
   
   // Analytics — don't exist, return empty data
   getAnalytics: () => safeGet('/admin/analytics/revenue', { 
@@ -814,6 +857,27 @@ export const adminAPI = {
 
   // Platform Earnings — doesn't exist
   getPlatformEarnings: () => safeGet('/admin/platform-earnings', { total: 0, monthly: [] }),
+
+  // Platform Settings — GST, Platform Fee, Delivery Fee
+  getPlatformSettings: () => apiClient.get('/admin/settings').catch(() => {
+    // Backend API not deployed yet — read from localStorage (admin saves fees here)
+    try {
+      const stored = JSON.parse(localStorage.getItem('sf_admin_fees') || '{}');
+      if (stored.gstPercent !== undefined) {
+        return {
+          data: {
+            gst_percent: stored.gstPercent ?? 0,
+            platform_percent: stored.platformPercent ?? 0,
+            delivery_flat: stored.deliveryFlat ?? 0,
+            free_delivery_threshold: stored.freeDeliveryThreshold ?? 500,
+          }
+        };
+      }
+    } catch {}
+    // Ultimate fallback if nothing in localStorage either
+    return { data: { gst_percent: 0, platform_percent: 0, delivery_flat: 0, free_delivery_threshold: 500 } };
+  }),
+  updatePlatformSettings: (data) => adminRequest('put', '/admin/settings', data),
 };
 
 // ============================================================================
@@ -870,10 +934,10 @@ export const tokenUtils = {
   },
   isAuthenticated: () => !!localStorage.getItem('access_token'),
   decodeToken: (token) => {
+    if (!token) return null;
     try {
-      return jwtDecode(token);
-    } catch (error) {
-      console.error('Error decoding token:', error);
+      return JSON.parse(atob(token.split('.')[1]));
+    } catch {
       return null;
     }
   },
@@ -929,5 +993,47 @@ export const paymentsAPI = {
     .catch(() => ({ data: { message: 'OTP verification not available' } })),
 };
 
-export default apiClient;
+// ============================================================================
+// CHECKOUT & PAYMENT APIs — Zomato-like order flow
+// ============================================================================
 
+export const checkoutAPI = {
+  // Order calculation
+  calculate: (data) => apiClient.post('/checkout/calculate', data),
+  
+  // Order creation
+  createOrder: (data) => apiClient.post('/checkout/create-order', data),
+  
+  // Razorpay
+  createRazorpayOrder: (data) => apiClient.post('/checkout/razorpay-order', data),
+  verifyPayment: (data) => apiClient.post('/checkout/verify-payment', data),
+  
+  // Stripe
+  createStripeSession: (data) => apiClient.post('/checkout/create-stripe-session', data),
+  verifyStripe: (data) => apiClient.post('/checkout/verify-stripe', data),
+  
+  // Buyer orders
+  getOrders: () => apiClient.get('/checkout/orders'),
+  getOrderDetail: (id) => apiClient.get(`/checkout/orders/${id}`),
+  cancelOrder: (id, reason) => apiClient.post(`/checkout/orders/${id}/cancel`, { reason }),
+  
+  // Farmer orders
+  getFarmerOrders: () => apiClient.get('/checkout/farmer-orders'),
+  acceptOrder: (id) => apiClient.post(`/checkout/farmer-orders/${id}/accept`),
+  rejectOrder: (id, reason) => apiClient.post(`/checkout/farmer-orders/${id}/reject`, { reason }),
+  updateStatus: (id, status) => apiClient.post(`/checkout/farmer-orders/${id}/status`, { status }),
+  collectCash: (id) => apiClient.post(`/checkout/farmer-orders/${id}/collect-cash`),
+  
+  // Wallet
+  getWallet: () => apiClient.get('/checkout/wallet'),
+  getWalletTransactions: () => apiClient.get('/checkout/wallet/transactions'),
+  
+  // Addresses
+  getAddresses: () => apiClient.get('/checkout/addresses'),
+  saveAddress: (data) => apiClient.post('/checkout/addresses', data),
+  
+  // Admin
+  getAdminDashboard: () => apiClient.get('/checkout/admin/dashboard'),
+};
+
+export default apiClient;

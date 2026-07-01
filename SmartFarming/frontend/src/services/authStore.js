@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import axios from 'axios';
-
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+import { API_BASE_URL } from './api';
 
 // ============================================================================
 // JWT HELPERS

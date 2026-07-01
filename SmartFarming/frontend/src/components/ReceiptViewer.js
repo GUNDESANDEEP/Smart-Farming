@@ -74,26 +74,60 @@ const ReceiptViewer = ({ receipt, onClose }) => {
     }
     setSending(true);
     try {
-      const res = await paymentsAPI.sendReceipt(receipt.receipt_id, sendForm);
-      const results = res.data?.results || {};
-      
-      // Show per-channel results
-      let allSent = true;
       let messages = [];
-      if (results.sms) {
-        if (results.sms.sent) messages.push('✅ SMS sent');
-        else { allSent = false; messages.push(`❌ SMS: ${results.sms.error || 'failed'}`); }
+      let allSent = true;
+
+      // --- Email: always use direct send (no DB lookup needed) ---
+      if (sendForm.email && sendForm.email_address) {
+        try {
+          const emailRes = await paymentsAPI.sendReceiptDirect({
+            email: true,
+            email_address: sendForm.email_address,
+            receipt_data: receipt,
+          });
+          const emailResult = emailRes.data?.results?.email;
+          if (emailRes.data?.success && emailResult?.sent) {
+            messages.push('✅ Email sent');
+          } else {
+            allSent = false;
+            messages.push(`❌ Email: ${emailResult?.error || emailRes.data?.error || 'Send failed'}`);
+          }
+        except (emailErr) {
+          allSent = false;
+          const errData = emailErr.response?.data;
+          messages.push(`❌ Email: ${errData?.error || errData?.results?.email?.error || emailErr.message || 'Failed'}`);
+        }
       }
-      if (results.whatsapp) {
-        if (results.whatsapp.sent) messages.push('✅ WhatsApp sent');
-        else { allSent = false; messages.push(`❌ WhatsApp: ${results.whatsapp.error || 'failed'}`); }
+
+      // --- SMS / WhatsApp: use DB receipt route ---
+      if (sendForm.sms || sendForm.whatsapp) {
+        try {
+          const smsRes = await paymentsAPI.sendReceipt(receipt.receipt_id, {
+            sms: sendForm.sms,
+            whatsapp: sendForm.whatsapp,
+            email: false,
+            phone: sendForm.phone,
+          });
+          const results = smsRes.data?.results || {};
+          if (results.sms) {
+            if (results.sms.sent) messages.push('✅ SMS sent');
+            else { allSent = false; messages.push(`❌ SMS: ${results.sms.error || 'failed'}`); }
+          }
+          if (results.whatsapp) {
+            if (results.whatsapp.sent) messages.push('✅ WhatsApp sent');
+            else { allSent = false; messages.push(`❌ WhatsApp: ${results.whatsapp.error || 'failed'}`); }
+          }
+        } catch (smsErr) {
+          allSent = false;
+          if (sendForm.sms) messages.push(`❌ SMS: ${smsErr.response?.data?.error || 'Not available'}`);
+          if (sendForm.whatsapp) messages.push(`❌ WhatsApp: ${smsErr.response?.data?.error || 'Not available'}`);
+        }
       }
-      if (results.email) {
-        if (results.email.sent) messages.push('✅ Email sent');
-        else { allSent = false; messages.push(`❌ Email: ${results.email.error || 'failed'}`); }
-      }
-      
-      if (allSent) {
+
+      // --- Show results ---
+      if (messages.length === 0) {
+        toast.error('No delivery method selected');
+      } else if (allSent) {
         toast.success(messages.join('\n'), { duration: 4000 });
         setSendModal(false);
       } else {
@@ -105,6 +139,7 @@ const ReceiptViewer = ({ receipt, onClose }) => {
       setSending(false);
     }
   };
+
 
   const handleShare = async () => {
     if (navigator.share) {
