@@ -229,21 +229,23 @@ EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'SmartFarming')
 
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development').lower()
 
-if EMAIL_SENDER and os.getenv('EMAIL_PASSWORD'):
-    print(f"[OK] SMTP email configured - From: {EMAIL_FROM_NAME} <{EMAIL_SENDER}>")
+BREVO_API_KEY = os.getenv('BREVO_API_KEY', '')
+
+if BREVO_API_KEY:
+    print(f"[OK] Brevo Email API configured - From: {EMAIL_FROM_NAME} <{EMAIL_SENDER}>")
 elif ENVIRONMENT == 'production':
     error_msg = (
         f"\n{'='*60}\n"
-        f"  FATAL: SMTP EMAIL CONFIG IS MANDATORY IN PRODUCTION\n"
+        f"  FATAL: BREVO EMAIL API KEY IS MANDATORY IN PRODUCTION\n"
         f"{'='*60}\n"
-        f"  Missing: EMAIL_SENDER or EMAIL_PASSWORD\n"
-        f"  Set SMTP_HOST, SMTP_PORT, EMAIL_SENDER, EMAIL_PASSWORD in .env\n"
+        f"  Missing: BREVO_API_KEY\n"
+        f"  Set BREVO_API_KEY in Render environment variables\n"
         f"{'='*60}\n"
     )
     print(error_msg)
-    raise RuntimeError("SMTP configuration is mandatory. Missing: EMAIL_SENDER or EMAIL_PASSWORD")
+    raise RuntimeError("Brevo configuration is mandatory. Missing: BREVO_API_KEY")
 else:
-    print("[WARN] SMTP not configured — email/OTP features disabled in development")
+    print("[WARN] Brevo Email API not configured — email/OTP features disabled in development")
 
 # ============================================================================
 # WEATHER API CONFIG

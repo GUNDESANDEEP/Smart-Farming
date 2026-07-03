@@ -27,11 +27,12 @@ load_dotenv()
 
 SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
-EMAIL_SENDER = os.getenv('EMAIL_SENDER', '')
+EMAIL_SENDER = os.getenv('EMAIL_SENDER', 'gundesandeep2005@gmail.com')
 EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '')
 EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'SmartFarming')
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', '')
 FLASK_ENV = os.getenv('FLASK_ENV', 'development')
+BREVO_API_KEY = os.getenv('BREVO_API_KEY', '')
 
 
 def is_dev_mode():
@@ -133,31 +134,13 @@ class EmailService:
     @classmethod
     def validate_config(cls):
         """
-        Validate that SMTP credentials are configured.
-        Raises RuntimeError if missing - SMTP config is mandatory.
+        Validate that Brevo API Key is configured.
         """
-        if not EMAIL_SENDER or not EMAIL_PASSWORD:
-            env = os.getenv('ENVIRONMENT', os.getenv('FLASK_ENV', 'development')).lower()
-            error_msg = (
-                f"\n{'='*60}\n"
-                f"  SMTP EMAIL CONFIG NOT SET\n"
-                f"{'='*60}\n"
-                f"  EMAIL_SENDER or EMAIL_PASSWORD is not configured in .env\n\n"
-                f"  Required .env variables:\n"
-                f"    SMTP_HOST=smtp.gmail.com\n"
-                f"    SMTP_PORT=587\n"
-                f"    EMAIL_SENDER=your_email@gmail.com\n"
-                f"    EMAIL_PASSWORD=your_app_password\n"
-                f"    EMAIL_FROM_NAME=SmartFarming\n"
-                f"{'='*60}\n"
-            )
-            print(error_msg, file=sys.stderr)
-            if env == 'production':
-                raise RuntimeError("SMTP configuration incomplete: missing EMAIL_SENDER or EMAIL_PASSWORD")
-            print("[WARN] SMTP not configured — email features disabled in development")
+        if not BREVO_API_KEY:
+            print("[WARN] Brevo API Key not configured — email features disabled", file=sys.stderr)
             return False
         
-        print(f"[OK] SMTP email configured - Host: {SMTP_HOST}:{SMTP_PORT}, From: {EMAIL_FROM_NAME} <{EMAIL_SENDER}>")
+        print(f"[OK] Brevo Email API configured - Sender: {EMAIL_FROM_NAME} <{EMAIL_SENDER}>")
         return True
     
     # Keep backward-compatible alias
@@ -348,41 +331,59 @@ class EmailService:
     
     @staticmethod
     def _send_email(recipient_email, subject, html_body, plain_body=None):
-        """Internal method to send email via SMTP (Gmail) asynchronously.
-        
-        Uses smtplib with STARTTLS for secure email delivery.
-        """
+        """Internal method to send email via Brevo HTTP API asynchronously."""
         if not plain_body:
             plain_body = _html_to_plaintext(html_body)
         
-        if not EMAIL_SENDER or not EMAIL_PASSWORD:
-            print(f"[ERROR] SMTP not configured. Set EMAIL_SENDER + EMAIL_PASSWORD in .env")
+        if not BREVO_API_KEY:
+            print(f"[ERROR] Brevo API Key not configured. Set BREVO_API_KEY in .env")
             return False
         
         try:
-            msg = MIMEMultipart('alternative')
-            msg['From'] = f"{EMAIL_FROM_NAME} <{EMAIL_SENDER}>"
-            msg['To'] = recipient_email
-            msg['Subject'] = subject
-            
-            msg.attach(MIMEText(plain_body, 'plain'))
-            msg.attach(MIMEText(html_body, 'html'))
-            
+            import json
+            import urllib.request
             import threading
+            
+            payload = {
+                "sender": {
+                    "name": EMAIL_FROM_NAME,
+                    "email": EMAIL_SENDER
+                },
+                "to": [
+                    {
+                        "email": recipient_email,
+                        "name": recipient_email.split('@')[0]
+                    }
+                ],
+                "subject": subject,
+                "htmlContent": html_body,
+                "textContent": plain_body
+            }
+            
             def send_async():
                 try:
-                    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
-                        server.starttls()
-                        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                        server.send_message(msg)
-                    print(f"[OK] Email sent via SMTP to {recipient_email}")
+                    req = urllib.request.Request(
+                        "https://api.brevo.com/v3/smtp/email",
+                        data=json.dumps(payload).encode('utf-8'),
+                        headers={
+                            'accept': 'application/json',
+                            'api-key': BREVO_API_KEY,
+                            'content-type': 'application/json'
+                        },
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        if response.getcode() in (200, 201, 202):
+                            print(f"[OK] Email sent via Brevo HTTP API to {recipient_email}")
+                        else:
+                            print(f"[ERROR] Brevo HTTP API returned status: {response.getcode()}")
                 except Exception as e:
-                    print(f"[ERROR] SMTP email failed for {recipient_email}: {e}")
+                    print(f"[ERROR] Brevo HTTP API send failed for {recipient_email}: {e}")
             
             threading.Thread(target=send_async, daemon=True).start()
             return True
         except Exception as e:
-            print(f"[ERROR] Failed to start async email thread: {e}")
+            print(f"[ERROR] Failed to start async Brevo email thread: {e}")
             return False
 
 
