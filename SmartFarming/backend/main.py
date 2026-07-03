@@ -2,6 +2,7 @@
 Smart Farmer Marketplace - FastAPI Backend
 Platform: Render.com + Neon PostgreSQL + Redis Cloud
 Single entry point. Replaces Flask app.py.
+[Trigger Deploy: 2026-07-03]
 """
 
 # Fix Windows console encoding for emoji characters
