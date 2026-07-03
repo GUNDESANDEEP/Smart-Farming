@@ -68,32 +68,39 @@ if not DATABASE_URL:
 
 # Connection Pool
 db_pool = None
-try:
-    db_pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=5,
-        maxconn=30,
-        dsn=DATABASE_URL,
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5,
-        connect_timeout=10,
-        options='-c statement_timeout=30000'
-    )
-    print(f"[OK] PostgreSQL connection pool created (Neon)")
-    # Warmup
+
+def initialize_db_pool():
+    global db_pool
+    if db_pool is not None:
+        return
     try:
-        warmup_conn = db_pool.getconn()
-        warmup_cur = warmup_conn.cursor()
-        warmup_cur.execute('SELECT 1')
-        warmup_cur.close()
-        db_pool.putconn(warmup_conn)
-        print(f"[OK] Database warmup successful")
-    except Exception as warmup_err:
-        print(f"[WARN] Database warmup failed (will retry on first request): {warmup_err}")
-except Exception as e:
-    print(f"[ERR] PostgreSQL pool creation failed: {e}")
-    db_pool = None
+        db_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=5,
+            maxconn=30,
+            dsn=DATABASE_URL,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
+            connect_timeout=10,
+            options='-c statement_timeout=30000'
+        )
+        from models.models import set_db_pool
+        set_db_pool(db_pool)
+        print(f"[OK] PostgreSQL connection pool created (Neon)")
+        # Warmup
+        try:
+            warmup_conn = db_pool.getconn()
+            warmup_cur = warmup_conn.cursor()
+            warmup_cur.execute('SELECT 1')
+            warmup_cur.close()
+            db_pool.putconn(warmup_conn)
+            print(f"[OK] Database warmup successful")
+        except Exception as warmup_err:
+            print(f"[WARN] Database warmup failed (will retry on first request): {warmup_err}")
+    except Exception as e:
+        print(f"[ERR] PostgreSQL pool creation failed: {e}")
+        db_pool = None
 
 
 def recreate_db_pool():
@@ -150,7 +157,6 @@ except Exception as e:
 # PASS DB POOL TO MODELS
 # ============================================================================
 from models.models import set_db_pool, BaseModel
-set_db_pool(db_pool)
 
 # ============================================================================
 # CORS MIDDLEWARE
@@ -602,6 +608,7 @@ async def update_platform_settings(request: Request):
 
 @app.on_event("startup")
 async def startup_event():
+    initialize_db_pool()
     port = int(os.getenv('PORT', 8000))
     
     # Initialize platform settings table
