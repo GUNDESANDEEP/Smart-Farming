@@ -111,7 +111,7 @@ async def saas_analytics(request: Request, user_id: str = Depends(get_current_us
         revenue_growth = ((cur_rev - prev_rev) / prev_rev * 100) if prev_rev > 0 else 0
         order_growth = ((cur_ord - prev_ord) / prev_ord * 100) if prev_ord > 0 else 0
 
-        return JSONResponse(content={
+        return {
             'success': True,
             'analytics': {
                 'period_days': days,
@@ -128,7 +128,7 @@ async def saas_analytics(request: Request, user_id: str = Depends(get_current_us
                 'new_farmers': new_farmers['cnt'] if new_farmers else 0,
                 'new_buyers': new_buyers['cnt'] if new_buyers else 0,
             }
-        }), 200
+        }
 
     except Exception as e:
         print(f"SaaS analytics error: {e}")
