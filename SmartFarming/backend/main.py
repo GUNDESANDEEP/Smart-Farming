@@ -609,6 +609,11 @@ async def update_platform_settings(request: Request):
 @app.on_event("startup")
 async def startup_event():
     initialize_db_pool()
+    try:
+        from routes.checkout import run_checkout_migration
+        run_checkout_migration()
+    except Exception as migration_err:
+        print(f"[WARN] Checkout migration failed: {migration_err}")
     port = int(os.getenv('PORT', 8000))
     
     # Initialize platform settings table

@@ -184,12 +184,6 @@ def run_checkout_migration():
     
     print("[OK] Checkout tables ready")
 
-# Run migration on import
-try:
-    run_checkout_migration()
-except Exception as e:
-    print(f"[WARN] Checkout migration deferred: {e}")
-
 
 # ============================================================================
 # HELPERS
