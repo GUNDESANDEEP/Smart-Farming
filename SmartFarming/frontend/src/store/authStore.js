@@ -302,23 +302,24 @@ export const useAuthStore = create((set, get) => ({
   },
 
   logout: async () => {
-    set({ loading: true });
+    // Clear tokens and local state instantly so logout is immediate
+    tokenUtils.clearTokens();
+    set({
+      user: null,
+      token: null,
+      refreshToken: null,
+      isAuthenticated: false,
+      role: null,
+      authLoading: false,
+      loading: false,
+      error: null
+    });
+
+    // Make backend logout request in background
     try {
       await authAPI.logout();
     } catch (error) {
-      console.error('Logout error:', error);
-    } finally {
-      tokenUtils.clearTokens();
-      set({
-        user: null,
-        token: null,
-        refreshToken: null,
-        isAuthenticated: false,
-        role: null,
-        authLoading: false,
-        loading: false,
-        error: null
-      });
+      console.error('Background logout error:', error);
     }
   },
 
