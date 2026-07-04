@@ -1056,17 +1056,39 @@ const AdminNotifications = () => {
     try {
       const res = await adminAPI.getUsers({});
       const data = res.data;
-      const users = Array.isArray(data)
+      
+      let rawUsers = Array.isArray(data)
         ? data
         : [
             ...(data.farmers || []).map((f) => ({ ...f, role: f.role || 'farmer' })),
             ...(data.buyers || []).map((b) => ({ ...b, role: b.role || 'buyer' })),
             ...(data.users || []),
           ];
-      const deletedIds = (() => { try { return JSON.parse(localStorage.getItem('admin_deleted_users') || '[]'); } catch { return []; } })();
-      const active = users.filter(u => !deletedIds.includes(u._id || u.id || u.farmer_id || u.buyer_id || u.user_id));
-      setFarmerCount(active.filter(u => (u.role || '').toLowerCase() === 'farmer').length);
-      setBuyerCount(active.filter(u => (u.role || '').toLowerCase() === 'buyer').length);
+
+      const deletedIds = (() => { 
+        try { 
+          const ids = JSON.parse(localStorage.getItem('admin_deleted_users') || '[]'); 
+          return Array.isArray(ids) ? ids : [];
+        } catch { 
+          return []; 
+        } 
+      })();
+
+      const active = rawUsers
+        .map((u) => ({
+          ...u,
+          id: u._id || u.id || u.farmer_id || u.buyer_id || u.user_id,
+          role: u.role || u.role_name || 'farmer',
+        }))
+        .filter(u => !deletedIds.includes(u.id));
+
+      const farmersCount = active.filter(u => (u.role || '').toLowerCase() === 'farmer').length;
+      const buyersCount = active.filter(u => (u.role || '').toLowerCase() === 'buyer').length;
+
+      console.log('[AdminNotifications] Active users count:', active.length, 'Farmers:', farmersCount, 'Buyers:', buyersCount);
+
+      setFarmerCount(farmersCount);
+      setBuyerCount(buyersCount);
     } catch (err) {
       console.error('Error loading user counts:', err);
       setFarmerCount(0);
