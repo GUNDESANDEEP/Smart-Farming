@@ -122,6 +122,8 @@ async def get_users(request: Request, user_id: str = Depends(get_current_user)):
             fetch_all=True
         ) or []
 
+        print(f"[Admin Users] Farmers in DB: {len(farmers)}, Buyers in DB: {len(buyers)}")
+
         return {
             'success': True,
             'farmers': _serialize(farmers),
@@ -686,7 +688,7 @@ async def get_all_receipts(request: Request, user_id: str = Depends(get_current_
                     r.payment_type,
                     r.created_at,
                     COALESCE(r.buyer_name, CONCAT(b.first_name, ' ', b.last_name)) as buyer_name,
-                    CONCAT(f.first_name, ' ', f.last_name) as farmer_name,
+                    COALESCE(NULLIF(TRIM(CONCAT(f.first_name, ' ', f.last_name)), ''), 'N/A') as farmer_name,
                     COALESCE(
                         (SELECT STRING_AGG(ri.product_name, ', ') FROM receipt_items ri WHERE ri.receipt_id = r.id),
                         'N/A'
