@@ -724,6 +724,48 @@ async def get_all_receipts(request: Request, user_id: str = Depends(get_current_
         print(f"Get receipts error: {e}")
         return JSONResponse(status_code=500, content={'error': str(e)})
 
+
+@admin_router.post('/notifications')
+async def send_admin_notification(request: Request, user_id: str = Depends(get_current_user)):
+    """Send admin notification to farmers, buyers, or both (broadcast)"""
+    try:
+        data = await request.json()
+        target = data.get('target', 'both')  # 'farmers', 'buyers', 'both'
+        message = data.get('message', '').strip()
+
+        if not message:
+            return JSONResponse(status_code=400, content={'error': 'Message cannot be empty'})
+
+        # Find targets
+        user_ids = []
+        if target == 'farmers' or target == 'both':
+            farmers = BaseModel.execute_query("SELECT id FROM farmers WHERE is_active = true", fetch_all=True) or []
+            user_ids.extend([('farmer', f['id']) for f in farmers])
+
+        if target == 'buyers' or target == 'both':
+            buyers = BaseModel.execute_query("SELECT id FROM buyers WHERE is_verified = true", fetch_all=True) or []
+            user_ids.extend([('buyer', b['id']) for b in buyers])
+
+        # Insert notifications into database
+        inserted_count = 0
+        for utype, uid in user_ids:
+            try:
+                BaseModel.execute_insert(
+                    """INSERT INTO notifications (user_id, title, message, type)
+                       VALUES (%s, %s, %s, %s)""",
+                    (uid, 'Admin Announcement', message, 'announcement')
+                )
+                inserted_count += 1
+            except Exception as ins_err:
+                print(f"Failed to insert notification for {utype} user {uid}: {ins_err}")
+
+        return {'success': True, 'message': f'Announced successfully to {inserted_count} users.'}
+
+    except Exception as e:
+        print(f"Send admin notification error: {e}")
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
+
 # ============================================================================
 # FARMER / BUYER PROFILES (Admin view)
 # ============================================================================

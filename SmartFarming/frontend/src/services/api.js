@@ -826,6 +826,7 @@ export const adminAPI = {
   }),
   
   // Users — THIS WORKS
+  sendNotification: (data) => apiClient.post('/admin/notifications', data),
   getUsers: (page = 1, limit = 20, filters = {}) =>
     apiClient.get('/admin/users', { params: { page, limit, ...filters } }),
   getUserDetail: (id) => safeGet(`/admin/users/${id}`, {}),

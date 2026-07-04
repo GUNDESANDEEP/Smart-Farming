@@ -1119,50 +1119,62 @@ const AdminNotifications = () => {
     try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!message.trim()) { toast.error('Please type a message'); return; }
     setSending(true);
 
-    const notif = {
-      id: Date.now(),
-      message: message.trim(),
-      timestamp: new Date().toISOString(),
-      read: false,
-      from: 'Admin',
-    };
+    try {
+      // 1. Post notification to the backend for actual database-backed notifications
+      await adminAPI.sendNotification({
+        target,
+        message: message.trim()
+      });
 
-    let sentTo = [];
-    if (target === 'farmers' || target === 'both') {
-      const existing = getNotifications(NOTIF_KEY_FARMERS);
-      existing.unshift(notif);
-      localStorage.setItem(NOTIF_KEY_FARMERS, JSON.stringify(existing.slice(0, 50)));
-      sentTo.push('Farmers');
-    }
-    if (target === 'buyers' || target === 'both') {
-      const existing = getNotifications(NOTIF_KEY_BUYERS);
-      existing.unshift(notif);
-      localStorage.setItem(NOTIF_KEY_BUYERS, JSON.stringify(existing.slice(0, 50)));
-      sentTo.push('Buyers');
-    }
+      const notif = {
+        id: Date.now(),
+        message: message.trim(),
+        timestamp: new Date().toISOString(),
+        read: false,
+        from: 'Admin',
+      };
 
-    // Save to history
-    const histEntry = { ...notif, target: sentTo.join(' & '), targetKey: target };
-    const hist = JSON.parse(localStorage.getItem('sf_admin_notif_history') || '[]');
-    hist.unshift(histEntry);
-    localStorage.setItem('sf_admin_notif_history', JSON.stringify(hist.slice(0, 100)));
+      let sentTo = [];
+      if (target === 'farmers' || target === 'both') {
+        const existing = getNotifications(NOTIF_KEY_FARMERS);
+        existing.unshift(notif);
+        localStorage.setItem(NOTIF_KEY_FARMERS, JSON.stringify(existing.slice(0, 50)));
+        sentTo.push('Farmers');
+      }
+      if (target === 'buyers' || target === 'both') {
+        const existing = getNotifications(NOTIF_KEY_BUYERS);
+        existing.unshift(notif);
+        localStorage.setItem(NOTIF_KEY_BUYERS, JSON.stringify(existing.slice(0, 50)));
+        sentTo.push('Buyers');
+      }
 
-    // Dispatch storage event for same-tab sync
-    if (target === 'farmers' || target === 'both') {
-      window.dispatchEvent(new StorageEvent('storage', { key: NOTIF_KEY_FARMERS }));
-    }
-    if (target === 'buyers' || target === 'both') {
-      window.dispatchEvent(new StorageEvent('storage', { key: NOTIF_KEY_BUYERS }));
-    }
+      // Save to history
+      const histEntry = { ...notif, target: sentTo.join(' & '), targetKey: target };
+      const hist = JSON.parse(localStorage.getItem('sf_admin_notif_history') || '[]');
+      hist.unshift(histEntry);
+      localStorage.setItem('sf_admin_notif_history', JSON.stringify(hist.slice(0, 100)));
 
-    setMessage('');
-    setSending(false);
-    loadHistory();
-    toast.success(`📢 Notification sent to ${sentTo.join(' & ')}!`);
+      // Dispatch storage event for same-tab sync
+      if (target === 'farmers' || target === 'both') {
+        window.dispatchEvent(new StorageEvent('storage', { key: NOTIF_KEY_FARMERS }));
+      }
+      if (target === 'buyers' || target === 'both') {
+        window.dispatchEvent(new StorageEvent('storage', { key: NOTIF_KEY_BUYERS }));
+      }
+
+      setMessage('');
+      loadHistory();
+      toast.success(`📢 Notification sent to ${sentTo.join(' & ')}!`);
+    } catch (err) {
+      console.error('Failed to send admin notification:', err);
+      toast.error(err.response?.data?.error || 'Failed to send notification via API.');
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleDelete = (id) => {

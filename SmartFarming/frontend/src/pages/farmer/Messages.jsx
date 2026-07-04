@@ -105,38 +105,74 @@ export default function FarmerMessages() {
   };
 
   // Load admin notifications from localStorage
-  const loadAdminNotifications = () => {
+  // Load admin notifications from PostgreSQL backend
+  const loadAdminNotifications = async () => {
     try {
-      const stored = JSON.parse(localStorage.getItem('sf_notifications_farmers') || '[]');
-      const adminNotifs = stored.filter(n => !n.dismissed).map(n => ({
-        id: `admin_${n.id}`,
-        type: 'admin',
-        title: '📢 Admin Notification',
-        body: n.message,
-        time: timeAgoStr(n.timestamp),
-        read: n.read || false,
-        isAdmin: true,
-        timestamp: n.timestamp,
-      }));
-      // Merge: admin notifs at top, then default system notifs
-      setNotifications(prev => {
-        const systemNotifs = prev.filter(n => !n.isAdmin);
-        return [...adminNotifs, ...systemNotifs];
+      const token = localStorage.getItem('access_token');
+      if (!token) return;
+
+      const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+      const res = await fetch(`${API_URL}/auth/notifications`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-      // Also add admin announcements
-      const adminAnns = stored.filter(n => !n.dismissed).map(n => ({
-        id: `admin_ann_${n.id}`,
-        title: `📢 ${n.message.substring(0, 50)}${n.message.length > 50 ? '...' : ''}`,
-        body: n.message,
-        date: new Date(n.timestamp).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' }),
-        type: 'admin',
-        isAdmin: true,
-      }));
-      setAnnouncements(prev => {
-        const systemAnns = prev.filter(a => !a.isAdmin);
-        return [...adminAnns, ...systemAnns];
-      });
-    } catch {}
+      const data = await res.json();
+      if (data.success) {
+        const dbNotifs = (data.notifications || []).map(n => ({
+          id: n.id,
+          type: n.type || 'admin',
+          title: '📢 Admin Notification',
+          body: n.message,
+          time: timeAgoStr(n.created_at || n.timestamp),
+          read: n.is_read || false,
+          isAdmin: true,
+          timestamp: n.created_at || n.timestamp,
+        }));
+
+        // Load local ones too for backup, if any
+        const stored = JSON.parse(localStorage.getItem('sf_notifications_farmers') || '[]');
+        const localNotifs = stored.filter(n => !n.dismissed).map(n => ({
+          id: `local_${n.id}`,
+          type: 'admin',
+          title: '📢 Admin Announcement',
+          body: n.message,
+          time: timeAgoStr(n.timestamp),
+          read: n.read || false,
+          isAdmin: true,
+          timestamp: n.timestamp,
+        }));
+
+        setNotifications(prev => {
+          const systemNotifs = prev.filter(n => !n.isAdmin);
+          return [...dbNotifs, ...localNotifs, ...systemNotifs];
+        });
+
+        // Format Announcements
+        const dbAnns = (data.notifications || []).map(n => ({
+          id: `ann_${n.id}`,
+          title: `📢 ${n.title || 'Admin Announcement'}`,
+          body: n.message,
+          date: new Date(n.created_at || n.timestamp).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' }),
+          type: 'admin',
+          isAdmin: true,
+        }));
+
+        const localAnns = stored.filter(n => !n.dismissed).map(n => ({
+          id: `local_ann_${n.id}`,
+          title: `📢 ${n.message.substring(0, 50)}${n.message.length > 50 ? '...' : ''}`,
+          body: n.message,
+          date: new Date(n.timestamp).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' }),
+          type: 'admin',
+          isAdmin: true,
+        }));
+
+        setAnnouncements(prev => {
+          const systemAnns = prev.filter(a => !a.isAdmin);
+          return [...dbAnns, ...localAnns, ...systemAnns];
+        });
+      }
+    } catch (err) {
+      console.error('Error loading admin notifications from API:', err);
+    }
   };
 
   useEffect(() => {

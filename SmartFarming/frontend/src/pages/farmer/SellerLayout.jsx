@@ -59,29 +59,58 @@ export default function SellerLayout({ children, title, subtitle }) {
   const profileRef = useRef(null);
   const notifRef = useRef(null);
 
-  // Load admin notifications from localStorage and merge with sample
-  const loadAdminNotifs = () => {
+  // Load admin notifications from PostgreSQL backend and merge with sample
+  const loadAdminNotifs = async () => {
     try {
-      const stored = JSON.parse(localStorage.getItem('sf_notifications_farmers') || '[]');
-      const adminNotifs = stored.filter(n => !n.dismissed).map(n => {
-        const diff = Math.floor((Date.now() - new Date(n.timestamp).getTime()) / 60000);
-        const timeStr = diff < 1 ? 'Just now' : diff < 60 ? `${diff} min ago` : diff < 1440 ? `${Math.floor(diff/60)}h ago` : `${Math.floor(diff/1440)}d ago`;
-        return {
-          id: `admin_${n.id}`,
-          type: 'admin',
-          icon: '📢',
-          title: 'Admin Notification',
-          text: n.message,
-          time: timeStr,
-          unread: !n.read,
-          isAdmin: true,
-        };
+      const token = localStorage.getItem('access_token');
+      if (!token) return;
+
+      const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+      const res = await fetch(`${API_URL}/auth/notifications`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-      setNotifications(prev => {
-        const systemNotifs = prev.filter(n => !n.isAdmin);
-        return [...adminNotifs, ...systemNotifs];
-      });
-    } catch {}
+      const data = await res.json();
+      if (data.success) {
+        const dbNotifs = (data.notifications || []).map(n => {
+          const diff = Math.floor((Date.now() - new Date(n.created_at || n.timestamp).getTime()) / 60000);
+          const timeStr = diff < 1 ? 'Just now' : diff < 60 ? `${diff} min ago` : diff < 1440 ? `${Math.floor(diff/60)}h ago` : `${Math.floor(diff/1440)}d ago`;
+          return {
+            id: n.id,
+            type: n.type || 'admin',
+            icon: '📢',
+            title: n.title || 'Admin Notification',
+            text: n.message,
+            time: timeStr,
+            unread: !n.is_read,
+            isAdmin: true,
+          };
+        });
+
+        // Load local ones too for backup, if any
+        const stored = JSON.parse(localStorage.getItem('sf_notifications_farmers') || '[]');
+        const localNotifs = stored.filter(n => !n.dismissed).map(n => {
+          const diff = Math.floor((Date.now() - new Date(n.timestamp).getTime()) / 60000);
+          const timeStr = diff < 1 ? 'Just now' : diff < 60 ? `${diff} min ago` : diff < 1440 ? `${Math.floor(diff/60)}h ago` : `${Math.floor(diff/1440)}d ago`;
+          return {
+            id: `local_${n.id}`,
+            type: 'admin',
+            icon: '📢',
+            title: 'Admin Announcement',
+            text: n.message,
+            time: timeStr,
+            unread: !n.read,
+            isAdmin: true,
+          };
+        });
+
+        setNotifications(prev => {
+          const systemNotifs = prev.filter(n => !n.isAdmin);
+          return [...dbNotifs, ...localNotifs, ...systemNotifs];
+        });
+      }
+    } catch (err) {
+      console.error('Error loading admin notifications from API:', err);
+    }
   };
 
   // Close menus on outside click + load admin notifs
@@ -131,8 +160,19 @@ export default function SellerLayout({ children, title, subtitle }) {
   const userInitials = `${(nameParts[0] || 'F')[0]}${(nameParts[1] || '')[0] || ''}`.toUpperCase();
   const unreadCount = notifications.filter(n => n.unread).length;
 
-  const markAllRead = () => {
+  const markAllRead = async () => {
     setNotifications(prev => prev.map(n => ({ ...n, unread: false })));
+    try {
+      const token = localStorage.getItem('access_token');
+      if (!token) return;
+      const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+      await fetch(`${API_URL}/auth/notifications/read-all`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    } catch (err) {
+      console.error('Error marking all notifications read:', err);
+    }
   };
 
   const profileMenuItems = [
@@ -248,13 +288,29 @@ export default function SellerLayout({ children, title, subtitle }) {
                       <div
                         key={n.id}
                         className={`seller-notif-item ${n.unread ? 'unread' : ''}`}
-                        onClick={() => {
+                        onClick={async () => {
                           setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, unread: false } : x));
                           if (n.type === 'order') navigate('/farmer/orders');
                           if (n.type === 'message') navigate('/farmer/messages');
                           if (n.type === 'payment') navigate('/farmer/earnings');
                           if (n.type === 'admin') navigate('/farmer/messages');
                           setNotifPanelOpen(false);
+
+                          // If it is a database-backed notification (represented by numeric id)
+                          if (typeof n.id === 'number') {
+                            try {
+                              const token = localStorage.getItem('access_token');
+                              if (token) {
+                                const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+                                await fetch(`${API_URL}/auth/notifications/${n.id}/read`, {
+                                  method: 'POST',
+                                  headers: { Authorization: `Bearer ${token}` }
+                                });
+                              }
+                            } catch (e) {
+                              console.error('Error marking single notification read:', e);
+                            }
+                          }
                         }}
                       >
                       <div className={`notif-icon ${n.type}`}>{n.icon}</div>
