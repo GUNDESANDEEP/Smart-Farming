@@ -17,7 +17,7 @@ export const isRemoteApi = (baseUrl) =>
 const resolveApiBaseUrl = () => {
   if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
   if (isBrowserLocalHost()) return '/api';
-  return 'https://smart-farming-backend.onrender.com/api';
+  return 'https://smartfarming-marketplace.onrender.com/api';
 };
 
 export const API_BASE_URL = resolveApiBaseUrl();

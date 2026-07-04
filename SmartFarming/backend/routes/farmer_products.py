@@ -153,7 +153,7 @@ async def create_product(request: Request, user_id: str = Depends(get_current_us
              images, is_organic, harvest_date, location, discount_percentage)
         )
         
-        return JSONResponse(content={
+        return JSONResponse(status_code=201, content={
             'success': True,
             'message': 'Product created! Waiting for admin approval.',
             'product': {
@@ -167,7 +167,7 @@ async def create_product(request: Request, user_id: str = Depends(get_current_us
                 'location': location,
                 'status': 'pending',
             }
-        }), 201
+        })
     
     except Exception as e:
         import traceback

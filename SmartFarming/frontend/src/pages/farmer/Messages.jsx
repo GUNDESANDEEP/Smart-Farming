@@ -111,7 +111,7 @@ export default function FarmerMessages() {
       const token = localStorage.getItem('access_token');
       if (!token) return;
 
-      const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+      const API_URL = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
       const res = await fetch(`${API_URL}/auth/notifications`, {
         headers: { Authorization: `Bearer ${token}` }
       });

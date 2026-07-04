@@ -513,7 +513,7 @@ async def direct_sale(request: Request, user_id: str = Depends(get_current_user)
         ) or {}
         farmer_name_full = f"{farmer_info.get('first_name', '')} {farmer_info.get('last_name', '')}".strip()
 
-        return JSONResponse(content={
+        return JSONResponse(status_code=201, content={
             'success': True,
             'receipt': {
                 'id': db_receipt_id,
@@ -535,7 +535,7 @@ async def direct_sale(request: Request, user_id: str = Depends(get_current_user)
                 'transaction_id': txn_id,
                 'created_at': datetime.now().isoformat(),
             }
-        }), 201
+        })
 
     except Exception as e:
         print(f"Direct sale error: {e}")

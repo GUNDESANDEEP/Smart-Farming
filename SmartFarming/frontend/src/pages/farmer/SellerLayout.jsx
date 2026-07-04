@@ -65,7 +65,7 @@ export default function SellerLayout({ children, title, subtitle }) {
       const token = localStorage.getItem('access_token');
       if (!token) return;
 
-      const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+      const API_URL = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
       const res = await fetch(`${API_URL}/auth/notifications`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -165,7 +165,7 @@ export default function SellerLayout({ children, title, subtitle }) {
     try {
       const token = localStorage.getItem('access_token');
       if (!token) return;
-      const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+      const API_URL = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
       await fetch(`${API_URL}/auth/notifications/read-all`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` }
@@ -301,7 +301,7 @@ export default function SellerLayout({ children, title, subtitle }) {
                             try {
                               const token = localStorage.getItem('access_token');
                               if (token) {
-                                const API_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+                                const API_URL = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
                                 await fetch(`${API_URL}/auth/notifications/${n.id}/read`, {
                                   method: 'POST',
                                   headers: { Authorization: `Bearer ${token}` }
