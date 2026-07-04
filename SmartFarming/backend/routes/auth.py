@@ -1049,3 +1049,17 @@ async def read_single_notification(notification_id: int, user_id: str = Depends(
     except Exception as e:
         print(f"Read notification error: {e}")
         return JSONResponse(status_code=500, content={'error': str(e)})
+
+@auth_router.get('/diagnose')
+async def diagnose_database():
+    """Temporary endpoint to inspect users and their registered roles"""
+    try:
+        farmers = BaseModel.execute_query("SELECT id, first_name, last_name, email, phone FROM farmers LIMIT 30", fetch_all=True)
+        buyers = BaseModel.execute_query("SELECT id, first_name, last_name, email, phone FROM buyers LIMIT 30", fetch_all=True)
+        return {
+            'farmers': farmers,
+            'buyers': buyers
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
