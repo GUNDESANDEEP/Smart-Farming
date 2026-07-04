@@ -1054,6 +1054,7 @@ const AdminNotifications = () => {
   const [history, setHistory] = useState([]);
   const [farmerCount, setFarmerCount] = useState(0);
   const [buyerCount, setBuyerCount] = useState(0);
+  const [loadStatus, setLoadStatus] = useState('Initializing...');
 
   useEffect(() => {
     loadHistory();
@@ -1061,6 +1062,7 @@ const AdminNotifications = () => {
   }, []);
 
   const loadUserCounts = async () => {
+    setLoadStatus('Loading users from database...');
     try {
       const res = await adminAPI.getUsers({});
       const data = res.data;
@@ -1097,10 +1099,12 @@ const AdminNotifications = () => {
 
       setFarmerCount(farmersCount);
       setBuyerCount(buyersCount);
+      setLoadStatus(`Updated: Found ${farmersCount} farmer(s), ${buyersCount} buyer(s)`);
     } catch (err) {
       console.error('Error loading user counts:', err);
       setFarmerCount(0);
       setBuyerCount(0);
+      setLoadStatus(`Error: ${err.message}`);
     }
   };
 
@@ -1196,8 +1200,27 @@ const AdminNotifications = () => {
 
   return (
     <div style={{ maxWidth: 800, margin: '0 auto' }}>
-      <h2 style={{ color: '#14532d', marginBottom: 4 }}>🔔 Send Notifications</h2>
-      <p style={{ color: '#6b7280', fontSize: '0.85rem', marginBottom: 20 }}>Send announcements to all farmers or buyers in one tap</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <h2 style={{ color: '#14532d', margin: 0 }}>🔔 Send Notifications</h2>
+        <button onClick={loadUserCounts} style={{
+          padding: '6px 14px', borderRadius: '10px', fontSize: '0.78rem',
+          border: '1.5px solid #166534', background: '#f0fdf4', color: '#166534',
+          cursor: 'pointer', fontWeight: 700, transition: 'all 0.2s',
+          display: 'flex', alignItems: 'center', gap: '6px',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = '#166534'; e.currentTarget.style.color = '#fff'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = '#f0fdf4'; e.currentTarget.style.color = '#166534'; }}>
+          🔄 Refresh Counts
+        </button>
+      </div>
+      <p style={{ color: '#6b7280', fontSize: '0.85rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+        <span>Send announcements to all farmers or buyers in one tap.</span>
+        <span style={{ 
+          fontSize: '0.72rem', fontWeight: 600, padding: '2px 8px', borderRadius: '12px',
+          background: loadStatus.startsWith('Error') ? '#fef2f2' : (loadStatus.startsWith('Loading') ? '#eff6ff' : '#f0fdf4'),
+          color: loadStatus.startsWith('Error') ? '#dc2626' : (loadStatus.startsWith('Loading') ? '#1d4ed8' : '#166534'),
+        }}>{loadStatus}</span>
+      </p>
 
       {/* User Counts */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
