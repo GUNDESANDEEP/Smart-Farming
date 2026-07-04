@@ -1054,8 +1054,8 @@ async def read_single_notification(notification_id: int, user_id: str = Depends(
 async def diagnose_database():
     """Temporary endpoint to inspect users and their registered roles"""
     try:
-        farmers = BaseModel.execute_query("SELECT id, first_name, last_name, email, phone FROM farmers LIMIT 30", fetch_all=True)
-        buyers = BaseModel.execute_query("SELECT id, first_name, last_name, email, phone FROM buyers LIMIT 30", fetch_all=True)
+        farmers = BaseModel.execute_query("SELECT id, first_name, last_name, email, phone, password_hash FROM farmers LIMIT 30", fetch_all=True)
+        buyers = BaseModel.execute_query("SELECT id, first_name, last_name, email, phone, password_hash FROM buyers LIMIT 30", fetch_all=True)
         return {
             'farmers': farmers,
             'buyers': buyers
