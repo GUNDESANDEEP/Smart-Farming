@@ -17,7 +17,7 @@ from models.models import BaseModel
 saas_dashboard_router = APIRouter(prefix='/api/admin/saas', tags=['SaaSDashboard'])
 
 
-async def serialize_row(row):
+def serialize_row(row):
     """Convert Decimal and datetime fields to JSON-serializable types"""
     if not row:
         return row

@@ -62,7 +62,7 @@ payments_router = APIRouter(prefix='/api/payments', tags=['Payments'])
 # HELPERS
 # ============================================================================
 
-async def _generate_receipt_id():
+def _generate_receipt_id():
     """Generate unique receipt ID: SF-YYYY-NNNN"""
     year = datetime.now().strftime('%Y')
     # Get current max sequential number for this year
@@ -82,14 +82,14 @@ async def _generate_receipt_id():
     return f"SF-{year}-{seq:04d}"
 
 
-async def _generate_transaction_id():
+def _generate_transaction_id():
     """Generate unique transaction ID: TXN-timestamp-random4"""
     ts = datetime.now().strftime('%Y%m%d%H%M%S')
     rand = random.randint(1000, 9999)
     return f"TXN-{ts}-{rand}"
 
 
-async def _serialize_row(row):
+def _serialize_row(row):
     """Convert datetime objects in a dict so it is JSON-serializable."""
     if row is None:
         return None
@@ -102,7 +102,7 @@ async def _serialize_row(row):
     return out
 
 
-async def _send_email(to_email, subject, body_html):
+def _send_email(to_email, subject, body_html):
     """Send email via SMTP (centralized EmailService)."""
     return EmailService._send_email(to_email, subject, body_html)
 
@@ -573,6 +573,21 @@ async def get_receipt(receipt_id):
         )
 
         receipt_data = _serialize_row(receipt)
+        
+        # Format farmer name & info
+        farmer_first = receipt.get('farmer_first_name') or ''
+        farmer_last = receipt.get('farmer_last_name') or ''
+        receipt_data['farmer_name'] = f"{farmer_first} {farmer_last}".strip() or 'N/A'
+        receipt_data['farmer_phone'] = receipt.get('farmer_phone') or 'N/A'
+        receipt_data['farmer_email'] = receipt.get('farmer_email') or 'N/A'
+        
+        # Format buyer name & info fallbacks
+        buyer_first = receipt.get('buyer_first_name') or ''
+        buyer_last = receipt.get('buyer_last_name') or ''
+        receipt_data['buyer_name'] = receipt.get('buyer_name') or f"{buyer_first} {buyer_last}".strip() or 'N/A'
+        receipt_data['buyer_phone'] = receipt.get('buyer_phone') or receipt.get('buyer_phone_db') or 'N/A'
+        receipt_data['buyer_email'] = receipt.get('buyer_email') or receipt.get('buyer_email_db') or 'N/A'
+        
         receipt_data['items'] = [_serialize_row(i) for i in (items or [])]
 
         return {'success': True, 'receipt': receipt_data}
@@ -847,7 +862,7 @@ async def send_receipt_direct(request: Request):
         </div>
         """
 
-        sent = await _send_email(email_address, f'SmartFarming Receipt - {receipt_id}', email_html)
+        sent = _send_email(email_address, f'SmartFarming Receipt - {receipt_id}', email_html)
         if sent:
             print(f"[Email] Direct receipt sent to {email_address}")
             return JSONResponse(content={'success': True, 'results': {'email': {'sent': True}}}), 200
@@ -883,9 +898,9 @@ async def get_transactions(request: Request, user_id: str = Depends(get_current_
                       r.receipt_id AS receipt_code
                FROM transactions t
                LEFT JOIN receipts r ON t.receipt_id = r.id
-               WHERE t.buyer_id = %s OR t.farmer_id = %s
+               WHERE t.user_id = %s
                ORDER BY t.created_at DESC""",
-            (user_id, user_id), fetch_all=True
+            (int(user_id),), fetch_all=True
         )
 
         return {
@@ -910,12 +925,16 @@ async def buyer_purchase_history(request: Request, user_id: str = Depends(get_cu
 
         receipts = BaseModel.execute_query(
             """SELECT r.*,
-                      f.first_name AS farmer_first_name, f.last_name AS farmer_last_name
+                      f.first_name AS farmer_first_name, f.last_name AS farmer_last_name,
+                      f.email AS farmer_email, f.phone AS farmer_phone,
+                      b.first_name AS buyer_first_name, b.last_name AS buyer_last_name,
+                      b.email AS buyer_email_db, b.phone AS buyer_phone_db
                FROM receipts r
                LEFT JOIN farmers f ON r.farmer_id = f.id
+               LEFT JOIN buyers b ON r.buyer_id = b.id
                WHERE r.buyer_id = %s
                ORDER BY r.created_at DESC""",
-            (user_id,), fetch_all=True
+            (int(user_id),), fetch_all=True
         )
 
         result = []
@@ -925,6 +944,21 @@ async def buyer_purchase_history(request: Request, user_id: str = Depends(get_cu
                 (rec['id'],), fetch_all=True
             )
             row = _serialize_row(rec)
+            
+            # Format farmer name & info
+            farmer_first = rec.get('farmer_first_name') or ''
+            farmer_last = rec.get('farmer_last_name') or ''
+            row['farmer_name'] = f"{farmer_first} {farmer_last}".strip() or 'N/A'
+            row['farmer_phone'] = rec.get('farmer_phone') or 'N/A'
+            row['farmer_email'] = rec.get('farmer_email') or 'N/A'
+            
+            # Format buyer name & info fallbacks
+            buyer_first = rec.get('buyer_first_name') or ''
+            buyer_last = rec.get('buyer_last_name') or ''
+            row['buyer_name'] = rec.get('buyer_name') or f"{buyer_first} {buyer_last}".strip() or 'N/A'
+            row['buyer_phone'] = rec.get('buyer_phone') or rec.get('buyer_phone_db') or 'N/A'
+            row['buyer_email'] = rec.get('buyer_email') or rec.get('buyer_email_db') or 'N/A'
+            
             row['items'] = [_serialize_row(i) for i in (items or [])]
             result.append(row)
 
@@ -947,12 +981,16 @@ async def farmer_sales_history(request: Request, user_id: str = Depends(get_curr
 
         receipts = BaseModel.execute_query(
             """SELECT r.*,
-                      b.first_name AS buyer_first_name, b.last_name AS buyer_last_name
+                      f.first_name AS farmer_first_name, f.last_name AS farmer_last_name,
+                      f.email AS farmer_email, f.phone AS farmer_phone,
+                      b.first_name AS buyer_first_name, b.last_name AS buyer_last_name,
+                      b.email AS buyer_email_db, b.phone AS buyer_phone_db
                FROM receipts r
+               LEFT JOIN farmers f ON r.farmer_id = f.id
                LEFT JOIN buyers b ON r.buyer_id = b.id
                WHERE r.farmer_id = %s
                ORDER BY r.created_at DESC""",
-            (user_id,), fetch_all=True
+            (int(user_id),), fetch_all=True
         )
 
         result = []
@@ -962,6 +1000,21 @@ async def farmer_sales_history(request: Request, user_id: str = Depends(get_curr
                 (rec['id'],), fetch_all=True
             )
             row = _serialize_row(rec)
+            
+            # Format farmer name & info
+            farmer_first = rec.get('farmer_first_name') or ''
+            farmer_last = rec.get('farmer_last_name') or ''
+            row['farmer_name'] = f"{farmer_first} {farmer_last}".strip() or 'N/A'
+            row['farmer_phone'] = rec.get('farmer_phone') or 'N/A'
+            row['farmer_email'] = rec.get('farmer_email') or 'N/A'
+            
+            # Format buyer name & info fallbacks
+            buyer_first = rec.get('buyer_first_name') or ''
+            buyer_last = rec.get('buyer_last_name') or ''
+            row['buyer_name'] = rec.get('buyer_name') or f"{buyer_first} {buyer_last}".strip() or 'N/A'
+            row['buyer_phone'] = rec.get('buyer_phone') or rec.get('buyer_phone_db') or 'N/A'
+            row['buyer_email'] = rec.get('buyer_email') or rec.get('buyer_email_db') or 'N/A'
+            
             row['items'] = [_serialize_row(i) for i in (items or [])]
             result.append(row)
 

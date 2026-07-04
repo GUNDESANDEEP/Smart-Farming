@@ -679,23 +679,26 @@ async def get_all_receipts(request: Request, user_id: str = Depends(get_current_
         try:
             receipts = BaseModel.execute_query(
                 """SELECT 
-                    p.id,
-                    p.amount as total_amount,
-                    p.amount as grand_total,
-                    p.payment_method as payment_type,
-                    p.created_at,
-                    CONCAT(b.first_name, ' ', b.last_name) as buyer_name,
+                    r.id,
+                    r.receipt_id,
+                    r.grand_total as total_amount,
+                    r.grand_total,
+                    r.payment_type,
+                    r.created_at,
+                    COALESCE(r.buyer_name, CONCAT(b.first_name, ' ', b.last_name)) as buyer_name,
                     CONCAT(f.first_name, ' ', f.last_name) as farmer_name,
-                    pr.name as product_name,
-                    o.quantity as quantity_kg,
-                    o.order_number,
-                    o.status as order_status
-                   FROM payments p
-                   LEFT JOIN orders o ON p.order_id = o.id
-                   LEFT JOIN buyers b ON p.buyer_id = b.id OR o.buyer_id = b.id
-                   LEFT JOIN farmers f ON o.farmer_id = f.id
-                   LEFT JOIN products pr ON o.product_id = pr.id
-                   ORDER BY p.created_at DESC LIMIT %s OFFSET %s""",
+                    COALESCE(
+                        (SELECT STRING_AGG(ri.product_name, ', ') FROM receipt_items ri WHERE ri.receipt_id = r.id),
+                        'N/A'
+                    ) as product_name,
+                    COALESCE(
+                        (SELECT SUM(ri.quantity_kg) FROM receipt_items ri WHERE ri.receipt_id = r.id),
+                        0
+                    ) as quantity_kg
+                   FROM receipts r
+                   LEFT JOIN farmers f ON r.farmer_id = f.id
+                   LEFT JOIN buyers b ON r.buyer_id = b.id
+                   ORDER BY r.created_at DESC LIMIT %s OFFSET %s""",
                 (limit, offset), fetch_all=True
             ) or []
         except Exception as query_err:
@@ -796,37 +799,37 @@ async def settle_earning(earning_id: int, request: Request, user_id: str = Depen
         return JSONResponse(status_code=500, content={'error': str(e)})
 
 # ============================================================================
-# SaaS ANALYTICS (frontend expects these)
+# SaaS ANALYTICS (frontend expects these) - Commented out to use saas_dashboard.py implementations
 # ============================================================================
 
-@admin_router.get('/saas/analytics')
-async def saas_analytics(request: Request, user_id: str = Depends(get_current_user)):
-    """SaaS analytics overview"""
-    try:
-        return {'revenue': 0, 'orders': 0, 'users': 0, 'products': 0}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={'error': str(e)})
+# @admin_router.get('/saas/analytics')
+# async def saas_analytics(request: Request, user_id: str = Depends(get_current_user)):
+#     """SaaS analytics overview"""
+#     try:
+#         return {'revenue': 0, 'orders': 0, 'users': 0, 'products': 0}
+#     except Exception as e:
+#         return JSONResponse(status_code=500, content={'error': str(e)})
 
-@admin_router.get('/saas/top-products')
-async def saas_top_products(request: Request, user_id: str = Depends(get_current_user)):
-    """Top products"""
-    return []
+# @admin_router.get('/saas/top-products')
+# async def saas_top_products(request: Request, user_id: str = Depends(get_current_user)):
+#     """Top products"""
+#     return []
 
-@admin_router.get('/saas/revenue-breakdown')
-async def saas_revenue_breakdown(request: Request, user_id: str = Depends(get_current_user)):
-    """Revenue breakdown"""
-    return []
+# @admin_router.get('/saas/revenue-breakdown')
+# async def saas_revenue_breakdown(request: Request, user_id: str = Depends(get_current_user)):
+#     """Revenue breakdown"""
+#     return []
 
-@admin_router.get('/saas/monthly-sales')
-async def saas_monthly_sales(request: Request, user_id: str = Depends(get_current_user)):
-    """Monthly sales"""
-    return []
+# @admin_router.get('/saas/monthly-sales')
+# async def saas_monthly_sales(request: Request, user_id: str = Depends(get_current_user)):
+#     """Monthly sales"""
+#     return []
 
-@admin_router.get('/saas/profile')
-async def saas_profile(request: Request, user_id: str = Depends(get_current_user)):
-    """Admin profile"""
-    try:
-        admin = _check_admin(user_id)
-        return admin or {'id': user_id, 'role': 'admin'}
-    except Exception:
-        return {}
+# @admin_router.get('/saas/profile')
+# async def saas_profile(request: Request, user_id: str = Depends(get_current_user)):
+#     """Admin profile"""
+#     try:
+#         admin = _check_admin(user_id)
+#         return admin or {'id': user_id, 'role': 'admin'}
+#     except Exception:
+#         return {}
