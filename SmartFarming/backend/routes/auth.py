@@ -139,6 +139,13 @@ async def register(request: Request):
         role = data.get('role', 'buyer')
         first_name = data.get('first_name', '').strip()
         last_name = data.get('last_name', '').strip()
+        
+        # Fallback to splitting 'name' if first_name is empty
+        if not first_name and data.get('name'):
+            name_parts = data.get('name', '').strip().split(' ')
+            first_name = name_parts[0]
+            last_name = ' '.join(name_parts[1:])
+            
         email = data.get('email', '').strip()
         phone = data.get('phone', '').strip()
         password = data.get('password', '')
