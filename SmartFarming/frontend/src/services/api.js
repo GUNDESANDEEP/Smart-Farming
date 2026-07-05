@@ -2,7 +2,7 @@ import axios from 'axios';
 import jwtDecode from 'jwt-decode';
 import toast from 'react-hot-toast';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://smart-farming-backend.onrender.com/api';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
 // Local development (uncomment when running backend locally):
 // const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 
