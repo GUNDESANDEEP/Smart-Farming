@@ -48,7 +48,7 @@ if not DATABASE_URL:
 # Connection Pool with keepalive for remote PostgreSQL (Render/Neon)
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=5,
+        minconn=1,
         maxconn=10,
         dsn=DATABASE_URL,
         keepalives=1,
@@ -84,7 +84,7 @@ def recreate_db_pool():
             except Exception:
                 pass
         db_pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=5, maxconn=10, dsn=DATABASE_URL,
+            minconn=1, maxconn=10, dsn=DATABASE_URL,
             keepalives=1, keepalives_idle=30, keepalives_interval=10,
             keepalives_count=5, connect_timeout=10,
             options='-c statement_timeout=30000'
@@ -156,21 +156,7 @@ else:
 
 print(f"[OK] CORS allowed origins: {allowed_origins}")
 
-# Global catch-all for CORS preflight OPTIONS requests
-# This MUST run before any route matching to prevent 404 on OPTIONS
-@app.before_request
-def handle_options_preflight():
-    if request.method == 'OPTIONS':
-        origin = request.headers.get('Origin', '*')
-        response = app.make_default_options_response()
-        response.headers['Access-Control-Allow-Origin'] = origin
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        response.headers['Access-Control-Max-Age'] = '3600'
-        return response
-
-# CORS headers for actual responses are added in add_security_headers below
+# CORS headers are added in add_security_headers below
 
 # Pass DB pool to models
 from models.models import set_db_pool
@@ -236,27 +222,33 @@ except ImportError:
     print("[SKIP] twilio not installed")
 
 # ============================================================================
-# EMAIL (SMTP - Gmail) CONFIG - MANDATORY
+# EMAIL (SMTP) CONFIG - MANDATORY
 # ============================================================================
 app.config['SMTP_HOST'] = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-app.config['SMTP_PORT'] = int(os.getenv('SMTP_PORT', '587'))
-app.config['EMAIL_SENDER'] = os.getenv('EMAIL_SENDER', '')
+app.config['SMTP_PORT'] = int(os.getenv('SMTP_PORT', 587))
+app.config['EMAIL_SENDER'] = os.getenv('EMAIL_SENDER')
+app.config['EMAIL_PASSWORD'] = os.getenv('EMAIL_PASSWORD')
 app.config['EMAIL_FROM_NAME'] = os.getenv('EMAIL_FROM_NAME', 'SmartFarming')
 
-if app.config['EMAIL_SENDER'] and os.getenv('EMAIL_PASSWORD'):
-    print(f"[OK] SMTP email configured - From: {app.config['EMAIL_FROM_NAME']} <{app.config['EMAIL_SENDER']}>")
+if app.config['EMAIL_SENDER'] and app.config['EMAIL_PASSWORD']:
+    print(f"[OK] Email SMTP configured (MANDATORY) - Sender: {app.config['EMAIL_SENDER']}")
 else:
+    missing = []
+    if not app.config['EMAIL_SENDER']:
+        missing.append('EMAIL_SENDER')
+    if not app.config['EMAIL_PASSWORD']:
+        missing.append('EMAIL_PASSWORD')
     error_msg = (
         f"\n{'='*60}\n"
-        f"  ❌ FATAL: SMTP EMAIL CONFIG IS MANDATORY\n"
+        f"  ❌ FATAL: SMTP AUTHENTICATION IS MANDATORY\n"
         f"{'='*60}\n"
-        f"  Missing: EMAIL_SENDER or EMAIL_PASSWORD\n"
-        f"  The application cannot start without email credentials.\n"
-        f"  Set SMTP_HOST, SMTP_PORT, EMAIL_SENDER, EMAIL_PASSWORD in .env\n"
+        f"  Missing: {', '.join(missing)}\n"
+        f"  The application cannot start without SMTP credentials.\n"
+        f"  Please set EMAIL_SENDER and EMAIL_PASSWORD in your .env file.\n"
         f"{'='*60}\n"
     )
     print(error_msg)
-    raise RuntimeError("SMTP configuration is mandatory. Missing: EMAIL_SENDER or EMAIL_PASSWORD")
+    raise RuntimeError(f"SMTP configuration is mandatory. Missing: {', '.join(missing)}")
 
 # ============================================================================
 # WEATHER API CONFIG
@@ -361,13 +353,6 @@ try:
     blueprints_registered.append(f"saas_dashboard_bp -> {saas_dashboard_bp.url_prefix}")
 except Exception as e:
     print(f"[ERR] saas_dashboard: {e}")
-
-try:
-    from routes.premium import premium_bp
-    app.register_blueprint(premium_bp, url_prefix='/api/premium')
-    blueprints_registered.append(f"premium_bp -> /api/premium")
-except Exception as e:
-    print(f"[ERR] premium: {e}")
 
 # ============================================================================
 # ERROR HANDLERS
@@ -504,7 +489,7 @@ def health_check():
     except Exception as e:
         health['cache'] = f'error: {str(e)}'
     
-    status_code = 200
+    status_code = 200 if health['status'] == 'healthy' else 500
     return jsonify(health), status_code
 
 @app.route('/api', methods=['GET'])

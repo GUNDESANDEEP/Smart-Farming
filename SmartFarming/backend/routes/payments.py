@@ -4,16 +4,17 @@ Handles: Razorpay orders, payment verification, direct sales,
          receipts, PDF generation, receipt delivery, transaction history
 """
 
-from fastapi import APIRouter, Request, Query, Depends
-from fastapi.responses import JSONResponse
-from utils.jwt_utils import get_current_user
-from utils.email_service import EmailService
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from models.models import BaseModel
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 import json
 import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 load_dotenv()
 
@@ -56,7 +57,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Blueprint
 # ---------------------------------------------------------------------------
-payments_router = APIRouter(prefix='/api/payments', tags=['Payments'])
+payments_bp = Blueprint('payments', __name__)
 
 # ============================================================================
 # HELPERS
@@ -103,20 +104,70 @@ def _serialize_row(row):
 
 
 def _send_email(to_email, subject, body_html):
-    """Send email via SMTP (centralized EmailService)."""
-    return EmailService._send_email(to_email, subject, body_html)
+    """Send email via SMTP - SMTP authentication is MANDATORY. Uses STARTTLS port 587.
+    Anti-spam: uses display name, Reply-To, and text/plain fallback."""
+    sender_email = os.getenv('EMAIL_SENDER')
+    sender_password = os.getenv('EMAIL_PASSWORD')
+    
+    if not sender_email or not sender_password:
+        raise RuntimeError(
+            "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
+            "Email sending is mandatory and cannot be skipped."
+        )
+
+    try:
+        from email.utils import formataddr
+        import re
+        
+        msg = MIMEMultipart("alternative")
+        msg['From'] = formataddr(('SmartFarm', sender_email))
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg['Reply-To'] = sender_email
+        
+        # Add plain text fallback (reduces spam score)
+        plain_text = re.sub(r'<[^>]+>', '', body_html).strip()
+        plain_text = re.sub(r'\s+', ' ', plain_text)
+        msg.attach(MIMEText(plain_text, 'plain', 'utf-8'))
+        # HTML version
+        msg.attach(MIMEText(body_html, 'html', 'utf-8'))
+
+        smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', '587'))
+        
+        # Use SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(sender_email, sender_password)
+        server.send_message(msg)
+        server.quit()
+        print(f"[OK] Email sent to {to_email} (STARTTLS port 587)")
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        error_msg = (
+            f"[ERROR] SMTP Authentication FAILED for {sender_email}. "
+            f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
+        )
+        print(error_msg)
+        raise RuntimeError(error_msg)
+    except Exception as e:
+        print(f"[ERROR] Email error (payments): {e}")
+        return False
 
 
 # ============================================================================
 # PAYMENT OTP — Generate & Verify
 # ============================================================================
 
-@payments_router.post('/generate-payment-otp')
-async def generate_payment_otp(request: Request, user_id: str = Depends(get_current_user)):
+@payments_bp.route('/generate-payment-otp', methods=['POST'])
+@jwt_required()
+def generate_payment_otp():
     """Generate OTP for buyer payment confirmation, send via email."""
     try:
-        buyer_id = user_id
-        data = await request.json()
+        buyer_id = get_jwt_identity()
+        data = request.get_json()
         amount = float(data.get('amount', 0))
         product_details = json.dumps(data.get('items', []))
         farmer_id = data.get('farmer_id')
@@ -124,7 +175,7 @@ async def generate_payment_otp(request: Request, user_id: str = Depends(get_curr
         buyer_phone = data.get('buyer_phone', '')
 
         if amount <= 0:
-            return JSONResponse(status_code=400, content={'error': 'Invalid amount'})
+            return jsonify({'error': 'Invalid amount'}), 400
 
         # Generate 6-digit OTP
         otp = str(random.randint(100000, 999999))
@@ -153,27 +204,27 @@ async def generate_payment_otp(request: Request, user_id: str = Depends(get_curr
             """
             _send_email(buyer_email, f'Payment OTP: {otp} - SmartFarming', otp_html)
 
-        return {
+        return jsonify({
             'success': True,
             'otp_reference': otp_ref,
             'message': 'OTP sent to your email',
             'expires_in': 600,
-        }
+        }), 200
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@payments_router.post('/verify-payment-otp')
-async def verify_payment_otp(request: Request):
+@payments_bp.route('/verify-payment-otp', methods=['POST'])
+def verify_payment_otp():
     """Verify payment OTP — public endpoint (no JWT). Returns order details for success screen."""
     try:
-        data = await request.json()
+        data = request.get_json()
         otp = data.get('otp', '').strip()
 
         if not otp or len(otp) != 6:
-            return JSONResponse(status_code=400, content={'error': 'Enter a valid 6-digit OTP'})
+            return jsonify({'error': 'Enter a valid 6-digit OTP'}), 400
 
         # Find matching OTP
         otp_record = BaseModel.execute_query(
@@ -184,7 +235,7 @@ async def verify_payment_otp(request: Request):
         )
 
         if not otp_record:
-            return JSONResponse(status_code=400, content={'error': 'Invalid or expired OTP'})
+            return jsonify({'error': 'Invalid or expired OTP'}), 400
 
         # Mark as verified
         BaseModel.execute_query(
@@ -229,7 +280,7 @@ async def verify_payment_otp(request: Request):
 
         amount = float(otp_record['amount']) if otp_record.get('amount') else 0
 
-        return JSONResponse(content={
+        return jsonify({
             'success': True,
             'verified': True,
             'payment': {
@@ -245,24 +296,24 @@ async def verify_payment_otp(request: Request):
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 1. POST /create-order  –  Create Razorpay Order
 # ============================================================================
 
-@payments_router.post('/create-order')
-async def create_order(request: Request):
+@payments_bp.route('/create-order', methods=['POST'])
+def create_order():
     """Create a Razorpay payment order."""
     try:
         if razorpay_client is None:
-            return JSONResponse(status_code=503, content={'error': 'Razorpay is not configured'})
+            return jsonify({'error': 'Razorpay is not configured'}), 503
 
-        data = await request.json()
+        data = request.get_json()
         amount = data.get('amount')
         if not amount:
-            return JSONResponse(status_code=400, content={'error': 'Amount is required'})
+            return jsonify({'error': 'Amount is required'}), 400
 
         currency = data.get('currency', 'INR')
         receipt_id = data.get('receipt_id', _generate_receipt_id())
@@ -291,31 +342,31 @@ async def create_order(request: Request):
 
         rz_order = razorpay_client.order.create(data=order_data)
 
-        return JSONResponse(status_code=201, content={
+        return jsonify({
             'success': True,
             'order_id': rz_order['id'],
             'amount': amount_paise,
             'currency': currency,
             'key_id': os.getenv('RAZORPAY_KEY_ID'),
-        })
+        }), 201
 
     except Exception as e:
         print(f"Create order error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 2. POST /verify  –  Verify Razorpay Payment
 # ============================================================================
 
-@payments_router.post('/verify')
-async def verify_payment(request: Request):
+@payments_bp.route('/verify', methods=['POST'])
+def verify_payment():
     """Verify Razorpay payment signature, create payment + receipt + transaction."""
     try:
         if razorpay_client is None:
-            return JSONResponse(status_code=503, content={'error': 'Razorpay is not configured'})
+            return jsonify({'error': 'Razorpay is not configured'}), 503
 
-        data = await request.json()
+        data = request.get_json()
         razorpay_order_id = data.get('razorpay_order_id')
         razorpay_payment_id = data.get('razorpay_payment_id')
         razorpay_signature = data.get('razorpay_signature')
@@ -324,7 +375,7 @@ async def verify_payment(request: Request):
         farmer_id = data.get('farmer_id')
 
         if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
-            return JSONResponse(status_code=400, content={'error': 'Razorpay order_id, payment_id and signature are required'})
+            return jsonify({'error': 'Razorpay order_id, payment_id and signature are required'}), 400
 
         # --- Verify signature ---
         try:
@@ -334,7 +385,7 @@ async def verify_payment(request: Request):
                 'razorpay_signature': razorpay_signature,
             })
         except Exception:
-            return JSONResponse(status_code=400, content={'error': 'Payment signature verification failed'})
+            return jsonify({'error': 'Payment signature verification failed'}), 400
 
         # --- Calculate totals ---
         total_amount = sum(
@@ -390,7 +441,7 @@ async def verify_payment(request: Request):
              'debit', total_amount, 'Razorpay purchase')
         )
 
-        return JSONResponse(content={
+        return jsonify({
             'success': True,
             'payment_id': payment_id,
             'receipt_id': receipt_id,
@@ -408,19 +459,20 @@ async def verify_payment(request: Request):
 
     except Exception as e:
         print(f"Verify payment error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 3. POST /direct-sale  –  Farmer Direct Sale (no Razorpay)
 # ============================================================================
 
-@payments_router.post('/direct-sale')
-async def direct_sale(request: Request, user_id: str = Depends(get_current_user)):
+@payments_bp.route('/direct-sale', methods=['POST'])
+@jwt_required()
+def direct_sale():
     """Create a direct (offline) sale by farmer."""
     try:
-        farmer_id = user_id
-        data = await request.json()
+        farmer_id = get_jwt_identity()
+        data = request.get_json()
 
         items = data.get('items', [])
         payment_type = data.get('payment_type', 'cash')  # cash | upi | card
@@ -430,10 +482,10 @@ async def direct_sale(request: Request, user_id: str = Depends(get_current_user)
         discount = float(data.get('discount', 0))
 
         if not items:
-            return JSONResponse(status_code=400, content={'error': 'At least one item is required'})
+            return jsonify({'error': 'At least one item is required'}), 400
 
-        if payment_type not in ('cash', 'upi', 'card', 'online', 'bank_transfer'):
-            return JSONResponse(status_code=400, content={'error': 'Invalid payment_type. Use cash, upi, card, or bank_transfer'})
+        if payment_type not in ('cash', 'upi', 'card', 'online'):
+            return jsonify({'error': 'Invalid payment_type. Use cash, upi, or card'}), 400
 
         # --- Calculate totals ---
         subtotal = sum(
@@ -513,7 +565,7 @@ async def direct_sale(request: Request, user_id: str = Depends(get_current_user)
         ) or {}
         farmer_name_full = f"{farmer_info.get('first_name', '')} {farmer_info.get('last_name', '')}".strip()
 
-        return JSONResponse(content={
+        return jsonify({
             'success': True,
             'receipt': {
                 'id': db_receipt_id,
@@ -539,15 +591,15 @@ async def direct_sale(request: Request, user_id: str = Depends(get_current_user)
 
     except Exception as e:
         print(f"Direct sale error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 4. GET /receipt/<receipt_id>  –  Get Receipt Details
 # ============================================================================
 
-@payments_router.get('/receipt/{receipt_id}')
-async def get_receipt(receipt_id):
+@payments_bp.route('/receipt/<receipt_id>', methods=['GET'])
+def get_receipt(receipt_id):
     """Return full receipt with items, buyer info, farmer info."""
     try:
         receipt = BaseModel.execute_query(
@@ -555,21 +607,16 @@ async def get_receipt(receipt_id):
                       f.first_name AS farmer_first_name, f.last_name AS farmer_last_name,
                       f.email AS farmer_email, f.phone AS farmer_phone,
                       b.first_name AS buyer_first_name, b.last_name AS buyer_last_name,
-                      b.email AS buyer_email_db, b.phone AS buyer_phone_db,
-                      fo.first_name AS order_farmer_first, fo.last_name AS order_farmer_last,
-                      fo.email AS order_farmer_email, fo.phone AS order_farmer_phone
+                      b.email AS buyer_email_db, b.phone AS buyer_phone_db
                FROM receipts r
-               LEFT JOIN payments p ON r.payment_id = p.id
-               LEFT JOIN orders o ON p.order_id = o.id
                LEFT JOIN farmers f ON r.farmer_id = f.id
-               LEFT JOIN farmers fo ON o.farmer_id = fo.id
                LEFT JOIN buyers b ON r.buyer_id = b.id
                WHERE r.receipt_id = %s""",
             (receipt_id,), fetch_one=True
         )
 
         if not receipt:
-            return JSONResponse(status_code=404, content={'error': 'Receipt not found'})
+            return jsonify({'error': 'Receipt not found'}), 404
 
         # Get receipt items
         items = BaseModel.execute_query(
@@ -578,36 +625,21 @@ async def get_receipt(receipt_id):
         )
 
         receipt_data = _serialize_row(receipt)
-        
-        # Format farmer name & info with fallback
-        farmer_first = receipt.get('farmer_first_name') or receipt.get('order_farmer_first') or ''
-        farmer_last = receipt.get('farmer_last_name') or receipt.get('order_farmer_last') or ''
-        receipt_data['farmer_name'] = f"{farmer_first} {farmer_last}".strip() or 'SmartFarm'
-        receipt_data['farmer_phone'] = receipt.get('farmer_phone') or receipt.get('order_farmer_phone') or 'N/A'
-        receipt_data['farmer_email'] = receipt.get('farmer_email') or receipt.get('order_farmer_email') or 'N/A'
-        
-        # Format buyer name & info fallbacks
-        buyer_first = receipt.get('buyer_first_name') or ''
-        buyer_last = receipt.get('buyer_last_name') or ''
-        receipt_data['buyer_name'] = receipt.get('buyer_name') or f"{buyer_first} {buyer_last}".strip() or 'Guest Buyer'
-        receipt_data['buyer_phone'] = receipt.get('buyer_phone') or receipt.get('buyer_phone_db') or 'N/A'
-        receipt_data['buyer_email'] = receipt.get('buyer_email') or receipt.get('buyer_email_db') or 'N/A'
-        
         receipt_data['items'] = [_serialize_row(i) for i in (items or [])]
 
-        return {'success': True, 'receipt': receipt_data}
+        return jsonify({'success': True, 'receipt': receipt_data}), 200
 
     except Exception as e:
         print(f"Get receipt error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 5. GET /receipt/<receipt_id>/pdf  –  Generate PDF (stub: returns JSON)
 # ============================================================================
 
-@payments_router.get('/receipt/{receipt_id}/pdf')
-async def get_receipt_pdf(receipt_id):
+@payments_bp.route('/receipt/<receipt_id>/pdf', methods=['GET'])
+def get_receipt_pdf(receipt_id):
     """Generate PDF for receipt. (Stub – returns JSON for now.)"""
     try:
         receipt = BaseModel.execute_query(
@@ -615,7 +647,7 @@ async def get_receipt_pdf(receipt_id):
             (receipt_id,), fetch_one=True
         )
         if not receipt:
-            return JSONResponse(status_code=404, content={'error': 'Receipt not found'})
+            return jsonify({'error': 'Receipt not found'}), 404
 
         items = BaseModel.execute_query(
             "SELECT * FROM receipt_items WHERE receipt_id = %s",
@@ -625,26 +657,26 @@ async def get_receipt_pdf(receipt_id):
         receipt_data = _serialize_row(receipt)
         receipt_data['items'] = [_serialize_row(i) for i in (items or [])]
 
-        return {
+        return jsonify({
             'success': True,
             'message': 'PDF generation coming soon. Returning JSON receipt data.',
             'receipt': receipt_data,
-        }
+        }), 200
 
     except Exception as e:
         print(f"Receipt PDF error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 6. POST /receipt/<receipt_id>/send  –  Send Receipt (SMS / WhatsApp / Email)
 # ============================================================================
 
-@payments_router.post('/receipt/{receipt_id}/send')
-async def send_receipt(receipt_id, request: Request):
+@payments_bp.route('/receipt/<receipt_id>/send', methods=['POST'])
+def send_receipt(receipt_id):
     """Send receipt via SMS, WhatsApp and/or Email."""
     try:
-        data = await request.json()
+        data = request.get_json()
         send_sms = data.get('sms', False)
         send_whatsapp = data.get('whatsapp', False)
         send_email_flag = data.get('email', False)
@@ -657,7 +689,7 @@ async def send_receipt(receipt_id, request: Request):
             (receipt_id,), fetch_one=True
         )
         if not receipt:
-            return JSONResponse(status_code=404, content={'error': 'Receipt not found'})
+            return jsonify({'error': 'Receipt not found'}), 404
 
         # Fetch items
         items = BaseModel.execute_query(
@@ -787,159 +819,64 @@ async def send_receipt(receipt_id, request: Request):
                     print(f"[Email ERROR] Failed to send to {email_address}")
                 results['email'] = {'sent': sent}
 
-        return {'success': True, 'results': results}
+        return jsonify({'success': True, 'results': results}), 200
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
-
-
-# ============================================================================
-# 6b. POST /receipt/send-direct  –  Send Receipt via Email (no DB lookup)
-# ============================================================================
-
-@payments_router.post('/receipt/send-direct')
-async def send_receipt_direct(request: Request):
-    """Send receipt via email using receipt data from the request body.
-    Used when the receipt was generated locally (not saved in DB)."""
-    try:
-        data = await request.json()
-        email_address = data.get('email_address', '').strip()
-        receipt = data.get('receipt_data', {})
-
-        if not email_address:
-            return JSONResponse(status_code=400, content={'error': 'Email address is required'})
-        if not receipt:
-            return JSONResponse(status_code=400, content={'error': 'Receipt data is required'})
-
-        items = receipt.get('items', [])
-        receipt_id = receipt.get('receipt_id', 'N/A')
-        grand_total = receipt.get('grand_total', 0)
-        subtotal_val = receipt.get('subtotal', 0)
-        discount_val = receipt.get('discount', 0)
-        payment_type = receipt.get('payment_type', 'N/A')
-        buyer_name = receipt.get('buyer_name', '')
-        farmer_name = receipt.get('farmer_name', '')
-        created_at = receipt.get('created_at', '')
-
-        # Build HTML email
-        item_rows = ''.join(
-            f"<tr><td style='padding:6px;'>{it.get('product_name','')}</td>"
-            f"<td style='padding:6px;text-align:right;'>{it.get('quantity_kg','')} kg</td>"
-            f"<td style='padding:6px;text-align:right;'>₹{it.get('price_per_kg','')}</td>"
-            f"<td style='padding:6px;text-align:right;'>₹{it.get('item_total', float(it.get('quantity_kg',0))*float(it.get('price_per_kg',0)))}</td></tr>"
-            for it in items
-        )
-
-        email_html = f"""
-        <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:auto;padding:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
-            <div style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);padding:24px;text-align:center;">
-                <div style="font-size:28px;margin-bottom:6px;">🌾</div>
-                <h1 style="margin:0;font-size:22px;font-weight:700;color:#166534;">SmartFarming Receipt</h1>
-                <p style="margin:4px 0 0;font-size:12px;color:#6b7280;">Your Trusted Farming Partner</p>
-            </div>
-            <div style="padding:24px;">
-                <div style="background:#f0fdf4;padding:14px;border-radius:10px;margin-bottom:16px;">
-                    <p style="margin:4px 0;font-size:13px;color:#374151;"><strong>Receipt:</strong> {receipt_id}</p>
-                    <p style="margin:4px 0;font-size:13px;color:#374151;"><strong>Date:</strong> {created_at}</p>
-                    <p style="margin:4px 0;font-size:13px;color:#374151;"><strong>Farmer:</strong> {farmer_name}</p>
-                    <p style="margin:4px 0;font-size:13px;color:#374151;"><strong>Buyer:</strong> {buyer_name}</p>
-                </div>
-                <table style="width:100%;border-collapse:collapse;">
-                    <tr style="background:#dcfce7;">
-                        <th style="padding:8px;text-align:left;font-size:13px;color:#166534;">Item</th>
-                        <th style="padding:8px;text-align:right;font-size:13px;color:#166534;">Qty</th>
-                        <th style="padding:8px;text-align:right;font-size:13px;color:#166534;">Rate</th>
-                        <th style="padding:8px;text-align:right;font-size:13px;color:#166534;">Total</th>
-                    </tr>
-                    {item_rows}
-                </table>
-                <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0;"/>
-                <p style="margin:4px 0;font-size:14px;color:#374151;">Subtotal: ₹{subtotal_val}</p>
-                <p style="margin:4px 0;font-size:14px;color:#374151;">Discount: ₹{discount_val}</p>
-                <p style="margin:8px 0 0;font-size:18px;font-weight:700;color:#166534;">Grand Total: ₹{grand_total}</p>
-                <p style="margin:4px 0;font-size:13px;color:#6b7280;">Payment: {payment_type}</p>
-            </div>
-            <div style="background:#f9fafb;padding:16px;text-align:center;border-top:1px solid #e5e7eb;">
-                <p style="margin:0;font-size:12px;color:#9ca3af;">Thank you for choosing SmartFarming! 🌱</p>
-            </div>
-        </div>
-        """
-
-        sent = _send_email(email_address, f'SmartFarming Receipt - {receipt_id}', email_html)
-        if sent:
-            print(f"[Email] Direct receipt sent to {email_address}")
-            return JSONResponse(content={'success': True, 'results': {'email': {'sent': True}}}), 200
-
-        print(f"[Email ERROR] Failed to send direct receipt to {email_address}")
-        return JSONResponse(
-            content={
-                'success': False,
-                'error': 'Email delivery failed. Check SMTP settings (EMAIL_SENDER, EMAIL_PASSWORD).',
-                'results': {'email': {'sent': False, 'error': 'SMTP send failed'}},
-            },
-            status_code=200,
-        )
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 7. GET /transactions  –  User Transactions (JWT)
 # ============================================================================
 
-@payments_router.get('/transactions')
-async def get_transactions(request: Request, user_id: str = Depends(get_current_user)):
+@payments_bp.route('/transactions', methods=['GET'])
+@jwt_required()
+def get_transactions():
     """Return all transactions for the logged-in user."""
     try:
-        # user_id from dependency injection
+        user_id = get_jwt_identity()
 
         transactions = BaseModel.execute_query(
             """SELECT t.*,
                       r.receipt_id AS receipt_code
                FROM transactions t
                LEFT JOIN receipts r ON t.receipt_id = r.id
-               WHERE t.user_id = %s
+               WHERE t.buyer_id = %s OR t.farmer_id = %s
                ORDER BY t.created_at DESC""",
-            (int(user_id),), fetch_all=True
+            (user_id, user_id), fetch_all=True
         )
 
-        return {
+        return jsonify({
             'success': True,
             'transactions': [_serialize_row(t) for t in (transactions or [])],
-        }
+        }), 200
 
     except Exception as e:
         print(f"Get transactions error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 8. GET /buyer/purchase-history  –  Buyer Purchase History (JWT)
 # ============================================================================
 
-@payments_router.get('/buyer/purchase-history')
-async def buyer_purchase_history(request: Request, user_id: str = Depends(get_current_user)):
+@payments_bp.route('/buyer/purchase-history', methods=['GET'])
+@jwt_required()
+def buyer_purchase_history():
     """Return all receipts where buyer_id = current user."""
     try:
-        # user_id from dependency injection
+        user_id = get_jwt_identity()
 
         receipts = BaseModel.execute_query(
             """SELECT r.*,
-                      f.first_name AS farmer_first_name, f.last_name AS farmer_last_name,
-                      f.email AS farmer_email, f.phone AS farmer_phone,
-                      b.first_name AS buyer_first_name, b.last_name AS buyer_last_name,
-                      b.email AS buyer_email_db, b.phone AS buyer_phone_db
+                      f.first_name AS farmer_first_name, f.last_name AS farmer_last_name
                FROM receipts r
                LEFT JOIN farmers f ON r.farmer_id = f.id
-               LEFT JOIN buyers b ON r.buyer_id = b.id
                WHERE r.buyer_id = %s
                ORDER BY r.created_at DESC""",
-            (int(user_id),), fetch_all=True
+            (user_id,), fetch_all=True
         )
 
         result = []
@@ -949,53 +886,35 @@ async def buyer_purchase_history(request: Request, user_id: str = Depends(get_cu
                 (rec['id'],), fetch_all=True
             )
             row = _serialize_row(rec)
-            
-            # Format farmer name & info
-            farmer_first = rec.get('farmer_first_name') or ''
-            farmer_last = rec.get('farmer_last_name') or ''
-            row['farmer_name'] = f"{farmer_first} {farmer_last}".strip() or 'N/A'
-            row['farmer_phone'] = rec.get('farmer_phone') or 'N/A'
-            row['farmer_email'] = rec.get('farmer_email') or 'N/A'
-            
-            # Format buyer name & info fallbacks
-            buyer_first = rec.get('buyer_first_name') or ''
-            buyer_last = rec.get('buyer_last_name') or ''
-            row['buyer_name'] = rec.get('buyer_name') or f"{buyer_first} {buyer_last}".strip() or 'N/A'
-            row['buyer_phone'] = rec.get('buyer_phone') or rec.get('buyer_phone_db') or 'N/A'
-            row['buyer_email'] = rec.get('buyer_email') or rec.get('buyer_email_db') or 'N/A'
-            
             row['items'] = [_serialize_row(i) for i in (items or [])]
             result.append(row)
 
-        return {'success': True, 'purchases': result}
+        return jsonify({'success': True, 'purchases': result}), 200
 
     except Exception as e:
         print(f"Buyer purchase history error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
 # 9. GET /farmer/sales-history  –  Farmer Sales History (JWT)
 # ============================================================================
 
-@payments_router.get('/farmer/sales-history')
-async def farmer_sales_history(request: Request, user_id: str = Depends(get_current_user)):
+@payments_bp.route('/farmer/sales-history', methods=['GET'])
+@jwt_required()
+def farmer_sales_history():
     """Return all receipts where farmer_id = current user."""
     try:
-        # user_id from dependency injection
+        user_id = get_jwt_identity()
 
         receipts = BaseModel.execute_query(
             """SELECT r.*,
-                      f.first_name AS farmer_first_name, f.last_name AS farmer_last_name,
-                      f.email AS farmer_email, f.phone AS farmer_phone,
-                      b.first_name AS buyer_first_name, b.last_name AS buyer_last_name,
-                      b.email AS buyer_email_db, b.phone AS buyer_phone_db
+                      b.first_name AS buyer_first_name, b.last_name AS buyer_last_name
                FROM receipts r
-               LEFT JOIN farmers f ON r.farmer_id = f.id
                LEFT JOIN buyers b ON r.buyer_id = b.id
                WHERE r.farmer_id = %s
                ORDER BY r.created_at DESC""",
-            (int(user_id),), fetch_all=True
+            (user_id,), fetch_all=True
         )
 
         result = []
@@ -1005,26 +924,11 @@ async def farmer_sales_history(request: Request, user_id: str = Depends(get_curr
                 (rec['id'],), fetch_all=True
             )
             row = _serialize_row(rec)
-            
-            # Format farmer name & info
-            farmer_first = rec.get('farmer_first_name') or ''
-            farmer_last = rec.get('farmer_last_name') or ''
-            row['farmer_name'] = f"{farmer_first} {farmer_last}".strip() or 'N/A'
-            row['farmer_phone'] = rec.get('farmer_phone') or 'N/A'
-            row['farmer_email'] = rec.get('farmer_email') or 'N/A'
-            
-            # Format buyer name & info fallbacks
-            buyer_first = rec.get('buyer_first_name') or ''
-            buyer_last = rec.get('buyer_last_name') or ''
-            row['buyer_name'] = rec.get('buyer_name') or f"{buyer_first} {buyer_last}".strip() or 'N/A'
-            row['buyer_phone'] = rec.get('buyer_phone') or rec.get('buyer_phone_db') or 'N/A'
-            row['buyer_email'] = rec.get('buyer_email') or rec.get('buyer_email_db') or 'N/A'
-            
             row['items'] = [_serialize_row(i) for i in (items or [])]
             result.append(row)
 
-        return {'success': True, 'sales': result}
+        return jsonify({'success': True, 'sales': result}), 200
 
     except Exception as e:
         print(f"Farmer sales history error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500

@@ -1,16 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { FiMail, FiLock, FiPhone, FiArrowRight, FiUser, FiShield, FiEye, FiEyeOff } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { authAPI, tokenUtils, getErrorMessage, warmupServer } from '../services/api';
+import { authAPI, tokenUtils, getErrorMessage } from '../services/api';
 import useAuthStore from '../services/authStore';
 import '../styles/auth.css';
 
 const LoginPage = () => {
   const navigate = useNavigate();
-  const loginAction = useAuthStore((state) => state.login);
+  const { login, isAuthenticated, role } = useAuthStore();
   const [userType, setUserType] = useState('farmer');
-  const [showAdminTab, setShowAdminTab] = useState(false);
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({ email: '', phone: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
@@ -19,182 +18,106 @@ const LoginPage = () => {
   const [otp, setOtp] = useState('');
   const [otpLoading, setOtpLoading] = useState(false);
   const [buyerLoginData, setBuyerLoginData] = useState(null);
-  // Forgot password state
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotStep, setForgotStep] = useState(1);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotOtp, setForgotOtp] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [forgotLoading, setForgotLoading] = useState(false);
-  // OTP resend timer (60 seconds)
-  const [resendTimer, setResendTimer] = useState(0);
-  const resendTimerRef = useRef(null);
-  // Prevent duplicate submissions
-  const isSubmittingRef = useRef(false);
 
-  // Redirect if already logged in — one-time check on mount only
+  // Redirect if already logged in
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('admin') === 'true' || params.get('role') === 'admin') {
-      setShowAdminTab(true);
-      setUserType('admin');
+    if (isAuthenticated && role) {
+      const dashboardRoutes = { farmer: '/farmer', buyer: '/buyer', admin: '/admin' };
+      navigate(dashboardRoutes[role] || '/', { replace: true });
     }
+  }, [isAuthenticated, role, navigate]);
 
-    const token = localStorage.getItem('access_token');
-    const userStr = localStorage.getItem('user');
-    if (token && userStr) {
-      try {
-        const u = JSON.parse(userStr);
-        if (u?.role) {
-          const routes = { farmer: '/farmer', buyer: '/buyer', admin: '/admin' };
-          navigate(routes[u.role] || '/', { replace: true });
-        }
-      } catch { /* ignore parse errors */ }
-    }
-    return () => {
-      if (resendTimerRef.current) clearInterval(resendTimerRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Start the 60-second resend countdown
-  const startResendTimer = useCallback((seconds = 60) => {
-    setResendTimer(seconds);
-    if (resendTimerRef.current) clearInterval(resendTimerRef.current);
-    resendTimerRef.current = setInterval(() => {
-      setResendTimer((prev) => {
-        if (prev <= 1) {
-          clearInterval(resendTimerRef.current);
-          resendTimerRef.current = null;
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, []);
+  // Cursor trail is handled by GlobalCursor component in App.js
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  // Complete login (shared by all roles after successful authentication)
-  const completeLogin = useCallback((data) => {
-    const token = data.token || data.access_token;
+  // Complete login (shared by farmer/admin direct login and buyer post-OTP)
+  const completeLogin = (data) => {
+    const token = data.access_token || data.token;
     const refreshToken = data.refresh_token;
-    
-    const user = data.user || {
-      id: data._id || data.id,
-      name: data.name || '',
-      email: data.email || '',
-      phone: data.phone || '',
-      role: data.role || userType,
-    };
+    const user = data.user;
 
-    if (!user.id && (data._id || data.id)) user.id = data._id || data.id;
-    user.role = user.role || userType;
+    if (!token) {
+      toast.error('Login failed');
+      return;
+    }
+
+    if (!user.role) user.role = userType;
     if (!user.name) {
       user.name = user.first_name
         ? `${user.first_name} ${user.last_name || ''}`.trim()
         : user.email || user.phone;
     }
 
-    if (!token) {
-      toast.error('Login failed — no token received');
-      return;
-    }
-
     tokenUtils.setTokens(token, refreshToken);
     localStorage.setItem('user', JSON.stringify(user));
-    localStorage.setItem('login_timestamp', String(Date.now()));
-    loginAction(user, token, refreshToken);
+    login(user, token, refreshToken);
 
     toast.success(`Welcome back, ${user.name}!`, { icon: '🌾' });
 
     const dashboardRoutes = { farmer: '/farmer', buyer: '/buyer', admin: '/admin' };
     navigate(dashboardRoutes[user.role] || '/');
-  }, [userType, loginAction, navigate]);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    // Prevent duplicate submissions
-    if (isSubmittingRef.current || loading) return;
-    isSubmittingRef.current = true;
     setLoading(true);
 
-    const loginIdentifier = userType === 'buyer' ? formData.phone : formData.email;
-    const loginPassword = formData.password;
-
-    if (!loginIdentifier || !loginPassword) {
-      toast.error('Please enter your credentials and password');
-      setLoading(false);
-      isSubmittingRef.current = false;
-      return;
-    }
-
     try {
-      await warmupServer();
+      let response;
+      if (userType === 'farmer') {
+        response = await authAPI.farmerLogin(formData.email, formData.password);
+      } else if (userType === 'buyer') {
+        response = await authAPI.buyerLogin(formData.phone, formData.password);
+      } else {
+        response = await authAPI.adminLogin(formData.email, formData.password);
+      }
 
-      // Build login payload with both fields mapped to loginIdentifier
-      const loginPayload = { 
-        password: loginPassword, 
-        role: userType,
-        email: loginIdentifier,
-        phone: loginIdentifier
-      };
-
-      const response = await authAPI.login(loginPayload);
       const data = response.data;
 
-      // Login successful — all roles now return tokens directly
-      completeLogin(data);
-    } catch (error) {
-      if (error?._silentAuthRedirect) return;
-      
-      const errMsg = getErrorMessage(error);
-      if (errMsg) {
-        toast.error(errMsg, { duration: 5000 });
+      // Check if OTP verification is required
+      if (data.otp_required) {
+        setBuyerLoginData(data);
+        setOtpStep(2);
+        toast.success(`OTP sent to ${data.user?.email}`, { icon: '📧', duration: 5000 });
       } else {
-        toast.error('Login failed. Please check your credentials and try again.');
+        // Direct login (no email on account)
+        completeLogin(data);
+      }
+    } catch (error) {
+      // Don't show error toast for silent auth redirects
+      if (error._silentAuthRedirect) return;
+
+      const msg = getErrorMessage(error);
+      if (msg) {
+        // Choose icon based on error type
+        const icon = error._isNetworkError ? '🔌'
+          : error._isTimeoutError ? '⏱️'
+          : error.response?.status === 503 ? '🔄'
+          : '❌';
+        toast.error(msg, { icon, duration: 6000 });
       }
     } finally {
       setLoading(false);
-      isSubmittingRef.current = false;
     }
   };
 
-  // Buyer OTP handlers — only triggered by explicit user action
-  const handleSendOTP = async () => {
-    if (!buyerLoginData?.user?.email || otpLoading || resendTimer > 0) return;
-    setOtpLoading(true);
-    try {
-      const res = await authAPI.sendOTP(buyerLoginData.user.email);
-      const resendAfter = res.data?.resend_after || 60;
-      startResendTimer(resendAfter);
-      toast.success('OTP sent to your email!', { icon: '📧' });
-      setOtp('');
-    } catch (error) {
-      const status = error.response?.status;
-      if (status === 429) {
-        const remaining = error.response?.data?.resend_after || 60;
-        startResendTimer(remaining);
-        toast.error(error.response?.data?.error || `Please wait ${remaining}s before requesting another OTP.`);
-      } else {
-        toast.error(getErrorMessage(error) || 'Failed to send OTP.');
-      }
-    } finally {
-      setOtpLoading(false);
-    }
-  };
-
+  // Buyer OTP handlers
   const handleVerifyOTP = async (e) => {
     e.preventDefault();
     if (otp.length !== 6) {
       toast.error('Please enter the 6-digit OTP');
       return;
     }
-    if (otpLoading) return;
     setOtpLoading(true);
     try {
       const res = await authAPI.completeLogin(buyerLoginData.user.email, otp, userType);
@@ -213,8 +136,17 @@ const LoginPage = () => {
   };
 
   const handleResendOTP = async () => {
-    if (resendTimer > 0 || otpLoading) return;
-    await handleSendOTP();
+    if (!buyerLoginData?.user?.email) return;
+    setOtpLoading(true);
+    try {
+      await authAPI.sendOTP(buyerLoginData.user.email);
+      toast.success('OTP resent!', { icon: '📧' });
+      setOtp('');
+    } catch (error) {
+      toast.error('Failed to resend OTP.');
+    } finally {
+      setOtpLoading(false);
+    }
   };
 
   const handleForgotPassword = async () => {
@@ -225,14 +157,7 @@ const LoginPage = () => {
       toast.success('OTP sent to your email!');
       setForgotStep(2);
     } catch (err) {
-      const status = err.response?.status;
-      if (status === 404) {
-        toast.error('Email not found. Please check and try again.', { duration: 6000 });
-      } else if (status === 429) {
-        toast.error(err.response?.data?.error || 'Too many requests. Please wait.');
-      } else {
-        toast.error(getErrorMessage(err) || 'Failed to send OTP');
-      }
+      toast.error(err.response?.data?.error || 'Failed to send OTP');
     } finally { setForgotLoading(false); }
   };
 
@@ -286,22 +211,20 @@ const LoginPage = () => {
             >
               <FiUser size={14} /> Buyer
             </button>
-            {(showAdminTab || userType === 'admin') && (
-              <button
-                className={`role-tab ${userType === 'admin' ? 'active' : ''}`}
-                onClick={() => setUserType('admin')}
-                type="button"
-              >
-                <FiShield size={14} /> Admin
-              </button>
-            )}
+            <button
+              className={`role-tab ${userType === 'admin' ? 'active' : ''}`}
+              onClick={() => setUserType('admin')}
+              type="button"
+            >
+              <FiShield size={14} /> Admin
+            </button>
           </div>
 
           {/* Buyer OTP Step */}
           {otpStep === 2 ? (
             <form onSubmit={handleVerifyOTP} className="auth-form">
               <p style={{ textAlign: 'center', color: '#d1fae5', marginBottom: '8px', fontSize: '14px' }}>
-                📧 Enter OTP sent to <strong>{buyerLoginData?.user?.email}</strong>
+                📧 OTP sent to <strong>{buyerLoginData?.user?.email}</strong>
               </p>
               <div className="glass-input">
                 <FiShield className="input-icon" />
@@ -331,10 +254,10 @@ const LoginPage = () => {
                 <button
                   type="button"
                   onClick={handleResendOTP}
-                  disabled={otpLoading || resendTimer > 0}
-                  style={{ background: 'none', border: 'none', color: resendTimer > 0 ? '#6b7280' : '#86efac', cursor: resendTimer > 0 ? 'default' : 'pointer', fontSize: '13px' }}
+                  disabled={otpLoading}
+                  style={{ background: 'none', border: 'none', color: '#86efac', cursor: 'pointer', fontSize: '13px' }}
                 >
-                  {resendTimer > 0 ? `Resend in ${resendTimer}s` : 'Resend OTP'}
+                  Resend OTP
                 </button>
               </div>
             </form>
@@ -344,9 +267,9 @@ const LoginPage = () => {
               <div className="glass-input">
                 <FiPhone className="input-icon" />
                 <input
-                  type="text"
+                  type="tel"
                   name="phone"
-                  placeholder="Phone Number or Email"
+                  placeholder="Phone Number"
                   value={formData.phone}
                   onChange={handleChange}
                   required
@@ -356,9 +279,9 @@ const LoginPage = () => {
               <div className="glass-input">
                 <FiMail className="input-icon" />
                 <input
-                  type="text"
+                  type="email"
                   name="email"
-                  placeholder="Email ID or Phone"
+                  placeholder="Email ID"
                   value={formData.email}
                   onChange={handleChange}
                   required

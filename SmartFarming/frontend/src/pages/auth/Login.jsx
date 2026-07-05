@@ -41,7 +41,7 @@ export default function Login() {
         navigate('/buyer/marketplace');
       }
     } catch (error) {
-      toast.error(error.response?.data?.error || error.response?.data?.message || 'Login failed');
+      toast.error(error.response?.data?.error || 'Login failed');
     }
   };
 

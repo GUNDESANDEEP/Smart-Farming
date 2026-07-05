@@ -46,7 +46,6 @@ def get_products():
                 'price': float(p['price']),
                 'description': p['description'],
                 'images': json.loads(p['images']) if p.get('images') else [],
-                'location': p.get('location', ''),
                 'average_rating': float(p.get('average_rating') or 0),
                 'total_reviews': p.get('total_reviews', 0),
                 'organic': bool(p.get('organic', False)),

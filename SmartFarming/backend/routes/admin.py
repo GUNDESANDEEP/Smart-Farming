@@ -1,11 +1,10 @@
 """
 Admin Module - User Management, Product Approval, Analytics
-FastAPI APIRouter (converted from Flask Blueprint)
+Flask Blueprint (compatible with app.py)
 """
 
-from fastapi import APIRouter, Request, Depends, Query
-from fastapi.responses import JSONResponse
-from utils.jwt_utils import get_current_user
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from models.models import (
     User, Farmer, Buyer, Admin, Product, Order, Payment, Review, Notification,
     BaseModel
@@ -14,15 +13,16 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import json
 
-admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
 
 # ============================================================================
 # HELPER - Verify admin & serialize
 # ============================================================================
 
-def _check_admin(user_id):
+def _check_admin():
     """Check if current user is admin. Returns admin dict or None."""
     try:
+        user_id = get_jwt_identity()
         admin = BaseModel.execute_query(
             "SELECT *, admin_id as id FROM admins WHERE admin_id = %s",
             (int(user_id),), fetch_one=True
@@ -66,10 +66,15 @@ def _serialize_one(row):
 # DASHBOARD
 # ============================================================================
 
-@admin_router.get('/dashboard')
-async def dashboard(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/dashboard', methods=['GET'])
+@jwt_required()
+def dashboard():
     """Get admin dashboard statistics"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         stats = {}
 
         r = BaseModel.execute_query("SELECT COUNT(*) as cnt FROM farmers", fetch_one=True)
@@ -91,27 +96,32 @@ async def dashboard(request: Request, user_id: str = Depends(get_current_user)):
         stats['total_orders'] = r['cnt'] if r else 0
         stats['total_revenue'] = float(r['revenue'] or 0) if r else 0
 
-        return {
+        return jsonify({
             'success': True,
             'total_users': stats['total_farmers'] + stats['total_buyers'],
             'total_orders': stats['total_orders'],
             'total_revenue': stats['total_revenue'],
             'pending_products': stats['pending_products'],
             'stats': stats
-        }
+        }), 200
 
     except Exception as e:
         print(f"Dashboard error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # USER MANAGEMENT
 # ============================================================================
 
-@admin_router.get('/users')
-async def get_users(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/users', methods=['GET'])
+@jwt_required()
+def get_users():
     """Get list of all users (farmers + buyers)"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         farmers = BaseModel.execute_query(
             "SELECT id, first_name, last_name, email, phone, location, is_active, created_at FROM farmers ORDER BY created_at DESC",
             fetch_all=True
@@ -122,25 +132,28 @@ async def get_users(request: Request, user_id: str = Depends(get_current_user)):
             fetch_all=True
         ) or []
 
-        print(f"[Admin Users] Farmers in DB: {len(farmers)}, Buyers in DB: {len(buyers)}")
-
-        return {
+        return jsonify({
             'success': True,
             'farmers': _serialize(farmers),
             'buyers': _serialize(buyers),
             'total_farmers': len(farmers),
             'total_buyers': len(buyers)
-        }
+        }), 200
 
     except Exception as e:
         print(f"Get users error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.get('/users/{target_user_id}')
-async def get_user_details(target_user_id: str, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/users/<target_user_id>', methods=['GET'])
+@jwt_required()
+def get_user_details(target_user_id):
     """Get specific user details"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         # Try farmer first
         user = BaseModel.execute_query(
             "SELECT *, 'farmer' as role FROM farmers WHERE id = %s",
@@ -152,20 +165,25 @@ async def get_user_details(target_user_id: str, request: Request, user_id: str =
                 (target_user_id,), fetch_one=True
             )
         if not user:
-            return JSONResponse(status_code=404, content={'error': 'User not found'})
+            return jsonify({'error': 'User not found'}), 404
 
-        return {'user': _serialize_one(user)}
+        return jsonify({'user': _serialize_one(user)}), 200
 
     except Exception as e:
         print(f"Get user details error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/users/{target_user_id}/suspend')
-async def suspend_user(target_user_id: str, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/users/<target_user_id>/suspend', methods=['POST'])
+@jwt_required()
+def suspend_user(target_user_id):
     """Suspend user account"""
     try:
-        data = await request.json()
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        data = request.get_json(silent=True) or {}
         role = data.get('role', '')
 
         updated = False
@@ -184,30 +202,36 @@ async def suspend_user(target_user_id: str, request: Request, user_id: str = Dep
                 role = 'buyer'
 
         if not updated:
-            return JSONResponse(status_code=404, content={'error': 'User not found'})
+            return jsonify({'error': 'User not found'}), 404
 
         # Log action
         try:
+            admin_id = get_jwt_identity()
             BaseModel.execute_insert(
                 """INSERT INTO admin_activity_log (admin_id, action, module, target_id)
                    VALUES (%s, %s, %s, %s)""",
-                (int(user_id), 'suspend_user', role, str(target_user_id))
+                (int(admin_id), 'suspend_user', role, str(target_user_id))
             )
         except Exception:
             pass
 
-        return {'message': 'User suspended successfully'}
+        return jsonify({'message': 'User suspended successfully'}), 200
 
     except Exception as e:
         print(f"Suspend user error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/users/{target_user_id}/activate')
-async def activate_user(target_user_id: str, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/users/<target_user_id>/activate', methods=['POST'])
+@jwt_required()
+def activate_user(target_user_id):
     """Activate suspended user"""
     try:
-        data = await request.json()
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        data = request.get_json(silent=True) or {}
         role = data.get('role', '')
 
         updated = False
@@ -226,30 +250,36 @@ async def activate_user(target_user_id: str, request: Request, user_id: str = De
                 role = 'buyer'
 
         if not updated:
-            return JSONResponse(status_code=404, content={'error': 'User not found'})
+            return jsonify({'error': 'User not found'}), 404
 
         # Log action
         try:
+            admin_id = get_jwt_identity()
             BaseModel.execute_insert(
                 """INSERT INTO admin_activity_log (admin_id, action, module, target_id)
                    VALUES (%s, %s, %s, %s)""",
-                (int(user_id), 'activate_user', role, str(target_user_id))
+                (int(admin_id), 'activate_user', role, str(target_user_id))
             )
         except Exception:
             pass
 
-        return {'message': 'User activated successfully'}
+        return jsonify({'message': 'User activated successfully'}), 200
 
     except Exception as e:
         print(f"Activate user error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/users/{target_user_id}/delete')
-async def delete_user(target_user_id: str, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/users/<target_user_id>/delete', methods=['POST'])
+@jwt_required()
+def delete_user(target_user_id):
     """Permanently delete user from database"""
     try:
-        data = await request.json()
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        data = request.get_json(silent=True) or {}
         role = data.get('role', '')
 
         deleted = False
@@ -260,12 +290,22 @@ async def delete_user(target_user_id: str, request: Request, user_id: str = Depe
                 (target_user_id,), fetch_one=True
             )
             if result:
-                try: BaseModel.execute_query("DELETE FROM products WHERE farmer_id = %s", (target_user_id,))
-                except Exception: pass
-                try: BaseModel.execute_query("DELETE FROM orders WHERE farmer_id = %s", (target_user_id,))
-                except Exception: pass
-                try: BaseModel.execute_query("DELETE FROM wallet WHERE farmer_id = %s", (target_user_id,))
-                except Exception: pass
+                # Delete farmer's products (foreign key)
+                try:
+                    BaseModel.execute_query("DELETE FROM products WHERE farmer_id = %s", (target_user_id,))
+                except Exception:
+                    pass
+                # Delete farmer's orders
+                try:
+                    BaseModel.execute_query("DELETE FROM orders WHERE farmer_id = %s", (target_user_id,))
+                except Exception:
+                    pass
+                # Delete farmer's wallet
+                try:
+                    BaseModel.execute_query("DELETE FROM wallet WHERE farmer_id = %s", (target_user_id,))
+                except Exception:
+                    pass
+                # Delete the farmer
                 BaseModel.execute_query("DELETE FROM farmers WHERE id = %s", (target_user_id,))
                 deleted = True
                 role = 'farmer'
@@ -276,43 +316,56 @@ async def delete_user(target_user_id: str, request: Request, user_id: str = Depe
                 (target_user_id,), fetch_one=True
             )
             if result:
-                try: BaseModel.execute_query("DELETE FROM orders WHERE buyer_id = %s", (target_user_id,))
-                except Exception: pass
-                try: BaseModel.execute_query("DELETE FROM cart WHERE buyer_id = %s", (target_user_id,))
-                except Exception: pass
+                # Delete buyer's orders
+                try:
+                    BaseModel.execute_query("DELETE FROM orders WHERE buyer_id = %s", (target_user_id,))
+                except Exception:
+                    pass
+                # Delete buyer's cart items
+                try:
+                    BaseModel.execute_query("DELETE FROM cart WHERE buyer_id = %s", (target_user_id,))
+                except Exception:
+                    pass
+                # Delete the buyer
                 BaseModel.execute_query("DELETE FROM buyers WHERE id = %s", (target_user_id,))
                 deleted = True
                 role = 'buyer'
 
         if not deleted:
-            return JSONResponse(status_code=404, content={'error': 'User not found'})
+            return jsonify({'error': 'User not found'}), 404
 
         # Log action
         try:
+            admin_id = get_jwt_identity()
             BaseModel.execute_insert(
                 """INSERT INTO admin_activity_log (admin_id, action, module, target_id)
                    VALUES (%s, %s, %s, %s)""",
-                (int(user_id), 'delete_user', role, str(target_user_id))
+                (int(admin_id), 'delete_user', role, str(target_user_id))
             )
         except Exception:
             pass
 
-        return {'message': 'User permanently deleted'}
+        return jsonify({'message': 'User permanently deleted'}), 200
 
     except Exception as e:
         print(f"Delete user error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # FARMER VERIFICATION
 # ============================================================================
 
-@admin_router.get('/farmers/pending-verification')
-async def get_pending_farmers(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/farmers/pending-verification', methods=['GET'])
+@jwt_required()
+def get_pending_farmers():
     """Get farmers pending verification"""
     try:
-        page = int(request.query_params.get('page', 1))
-        limit = int(request.query_params.get('limit', 20))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 20, type=int)
         offset = (page - 1) * limit
 
         farmers = BaseModel.execute_query(
@@ -322,62 +375,73 @@ async def get_pending_farmers(request: Request, user_id: str = Depends(get_curre
             (limit, offset), fetch_all=True
         ) or []
 
-        return {'farmers': _serialize(farmers), 'page': page, 'limit': limit}
+        return jsonify({'farmers': _serialize(farmers), 'page': page, 'limit': limit}), 200
 
     except Exception as e:
         print(f"Get pending farmers error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/farmers/{farmer_id}/verify')
-async def verify_farmer(farmer_id: int, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/farmers/<int:farmer_id>/verify', methods=['POST'])
+@jwt_required()
+def verify_farmer(farmer_id):
     """Verify farmer"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         farmer = Farmer.get_by_id(farmer_id)
         if not farmer:
-            return JSONResponse(status_code=404, content={'error': 'Farmer not found'})
+            return jsonify({'error': 'Farmer not found'}), 404
 
         Farmer.update(farmer_id, is_verified=True)
-        return {'message': 'Farmer verified successfully'}
+        return jsonify({'message': 'Farmer verified successfully'}), 200
 
     except Exception as e:
         print(f"Verify farmer error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/farmers/{farmer_id}/reject')
-async def reject_farmer(farmer_id: int, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/farmers/<int:farmer_id>/reject', methods=['POST'])
+@jwt_required()
+def reject_farmer(farmer_id):
     """Reject farmer verification"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         farmer = Farmer.get_by_id(farmer_id)
         if not farmer:
-            return JSONResponse(status_code=404, content={'error': 'Farmer not found'})
+            return jsonify({'error': 'Farmer not found'}), 404
 
-        data = await request.json()
+        data = request.get_json(silent=True) or {}
         reason = data.get('reason', 'Verification rejected')
 
         BaseModel.execute_query(
             "UPDATE farmers SET is_verified = FALSE WHERE id = %s", (farmer_id,)
         )
 
-        return {'message': 'Farmer verification rejected'}
+        return jsonify({'message': 'Farmer verification rejected'}), 200
 
     except Exception as e:
         print(f"Reject farmer error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # PRODUCT MODERATION
 # ============================================================================
 
-@admin_router.get('/products/all')
-async def get_all_products(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/products/all', methods=['GET'])
+@jwt_required()
+def get_all_products():
     """Get ALL products for admin management"""
     try:
-        page = int(request.query_params.get('page', 1))
-        limit = int(request.query_params.get('limit', 100))
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 100, type=int)
         offset = (page - 1) * limit
-        status_filter = request.query_params.get('status', '')
+        status_filter = request.args.get('status', '')
 
         query = """
         SELECT p.*, f.first_name, f.last_name, f.phone as farmer_phone, f.email as farmer_email
@@ -393,19 +457,20 @@ async def get_all_products(request: Request, user_id: str = Depends(get_current_
 
         products = BaseModel.execute_query(query, tuple(params), fetch_all=True) or []
 
-        return {'products': _serialize(products), 'total': len(products)}
+        return jsonify({'products': _serialize(products), 'total': len(products)}), 200
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.get('/products/pending-approval')
-async def get_pending_products(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/products/pending-approval', methods=['GET'])
+@jwt_required()
+def get_pending_products():
     """Get products pending approval"""
     try:
-        page = int(request.query_params.get('page', 1))
-        limit = int(request.query_params.get('limit', 50))
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 50, type=int)
         offset = (page - 1) * limit
 
         products = BaseModel.execute_query(
@@ -417,57 +482,64 @@ async def get_pending_products(request: Request, user_id: str = Depends(get_curr
             (limit, offset), fetch_all=True
         ) or []
 
-        return {'products': _serialize(products), 'page': page, 'limit': limit}
+        return jsonify({'products': _serialize(products), 'page': page, 'limit': limit}), 200
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/products/{product_id}/approve')
-async def approve_product(product_id: int, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/products/<int:product_id>/approve', methods=['POST'])
+@jwt_required()
+def approve_product(product_id):
     """Approve product"""
     try:
         product = BaseModel.execute_query(
             "SELECT id, name FROM products WHERE id = %s", (product_id,), fetch_one=True
         )
         if not product:
-            return JSONResponse(status_code=404, content={'error': 'Product not found'})
+            return jsonify({'error': 'Product not found'}), 404
 
         BaseModel.execute_query("UPDATE products SET status = 'approved' WHERE id = %s", (product_id,))
-        return {'message': f'Product "{product["name"]}" approved successfully'}
+        return jsonify({'message': f'Product "{product["name"]}" approved successfully'}), 200
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/products/{product_id}/reject')
-async def reject_product(product_id: int, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/products/<int:product_id>/reject', methods=['POST'])
+@jwt_required()
+def reject_product(product_id):
     """Reject product"""
     try:
         product = BaseModel.execute_query(
             "SELECT id, name FROM products WHERE id = %s", (product_id,), fetch_one=True
         )
         if not product:
-            return JSONResponse(status_code=404, content={'error': 'Product not found'})
+            return jsonify({'error': 'Product not found'}), 404
 
         BaseModel.execute_query("UPDATE products SET status = 'rejected' WHERE id = %s", (product_id,))
-        return {'message': f'Product "{product["name"]}" rejected'}
+        return jsonify({'message': f'Product "{product["name"]}" rejected'}), 200
 
     except Exception as e:
         import traceback; traceback.print_exc()
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # ANALYTICS
 # ============================================================================
 
-@admin_router.get('/analytics/revenue')
-async def analytics_revenue(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/analytics/revenue', methods=['GET'])
+@jwt_required()
+def analytics_revenue():
     """Get revenue analytics"""
     try:
-        days = int(request.query_params.get('days', 30))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        days = request.args.get('days', 30, type=int)
         start_date = datetime.now() - timedelta(days=days)
 
         analytics = BaseModel.execute_query(
@@ -479,18 +551,23 @@ async def analytics_revenue(request: Request, user_id: str = Depends(get_current
             (start_date,), fetch_all=True
         ) or []
 
-        return {'period_days': days, 'analytics': _serialize(analytics)}
+        return jsonify({'period_days': days, 'analytics': _serialize(analytics)}), 200
 
     except Exception as e:
         print(f"Analytics revenue error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.get('/analytics/orders')
-async def analytics_orders(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/analytics/orders', methods=['GET'])
+@jwt_required()
+def analytics_orders():
     """Get orders analytics"""
     try:
-        days = int(request.query_params.get('days', 30))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        days = request.args.get('days', 30, type=int)
         start_date = datetime.now() - timedelta(days=days)
 
         analytics = BaseModel.execute_query(
@@ -500,18 +577,23 @@ async def analytics_orders(request: Request, user_id: str = Depends(get_current_
             (start_date,), fetch_all=True
         ) or []
 
-        return {'period_days': days, 'analytics': _serialize(analytics)}
+        return jsonify({'period_days': days, 'analytics': _serialize(analytics)}), 200
 
     except Exception as e:
         print(f"Analytics orders error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.get('/analytics/users')
-async def analytics_users(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/analytics/users', methods=['GET'])
+@jwt_required()
+def analytics_users():
     """Get users growth analytics"""
     try:
-        days = int(request.query_params.get('days', 30))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        days = request.args.get('days', 30, type=int)
         start_date = datetime.now() - timedelta(days=days)
 
         farmer_count = BaseModel.execute_query(
@@ -528,23 +610,28 @@ async def analytics_users(request: Request, user_id: str = Depends(get_current_u
             {'role_name': 'buyer', 'count': buyer_count['count'] if buyer_count else 0}
         ]
 
-        return {'period_days': days, 'analytics': analytics}
+        return jsonify({'period_days': days, 'analytics': analytics}), 200
 
     except Exception as e:
         print(f"Analytics users error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # DISPUTES
 # ============================================================================
 
-@admin_router.get('/disputes')
-async def get_disputes(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/disputes', methods=['GET'])
+@jwt_required()
+def get_disputes():
     """Get disputes/complaints"""
     try:
-        status = request.query_params.get('status', 'open')
-        page = int(request.query_params.get('page', 1))
-        limit = int(request.query_params.get('limit', 20))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        status = request.args.get('status', 'open')
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 20, type=int)
         offset = (page - 1) * limit
 
         try:
@@ -555,18 +642,23 @@ async def get_disputes(request: Request, user_id: str = Depends(get_current_user
         except Exception:
             disputes = []
 
-        return {'disputes': _serialize(disputes), 'page': page, 'limit': limit}
+        return jsonify({'disputes': _serialize(disputes), 'page': page, 'limit': limit}), 200
 
     except Exception as e:
         print(f"Get disputes error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/disputes/{dispute_id}/resolve')
-async def resolve_dispute(dispute_id: int, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/disputes/<int:dispute_id>/resolve', methods=['POST'])
+@jwt_required()
+def resolve_dispute(dispute_id):
     """Resolve dispute"""
     try:
-        data = await request.json()
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        data = request.get_json(silent=True) or {}
         resolution = data.get('resolution', '')
 
         try:
@@ -577,22 +669,27 @@ async def resolve_dispute(dispute_id: int, request: Request, user_id: str = Depe
         except Exception:
             pass
 
-        return {'message': 'Dispute resolved successfully'}
+        return jsonify({'message': 'Dispute resolved successfully'}), 200
 
     except Exception as e:
         print(f"Resolve dispute error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # AUDIT LOG
 # ============================================================================
 
-@admin_router.get('/audit-logs')
-async def get_audit_logs(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/audit-logs', methods=['GET'])
+@jwt_required()
+def get_audit_logs():
     """Get audit logs"""
     try:
-        page = int(request.query_params.get('page', 1))
-        limit = int(request.query_params.get('limit', 50))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 50, type=int)
         offset = (page - 1) * limit
 
         try:
@@ -603,21 +700,26 @@ async def get_audit_logs(request: Request, user_id: str = Depends(get_current_us
         except Exception:
             logs = []
 
-        return {'logs': _serialize(logs), 'page': page, 'limit': limit}
+        return jsonify({'logs': _serialize(logs), 'page': page, 'limit': limit}), 200
 
     except Exception as e:
         print(f"Get audit logs error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # ACTIVITY FEED
 # ============================================================================
 
-@admin_router.get('/activity-feed')
-async def get_activity_feed(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/activity-feed', methods=['GET'])
+@jwt_required()
+def get_activity_feed():
     """Get recent platform activity"""
     try:
-        limit = int(request.query_params.get('limit', 20))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        limit = request.args.get('limit', 20, type=int)
         activities = []
 
         # Recent orders
@@ -660,120 +762,59 @@ async def get_activity_feed(request: Request, user_id: str = Depends(get_current
         # Sort by timestamp
         activities.sort(key=lambda x: x.get('timestamp') or '', reverse=True)
 
-        return {'activities': activities[:limit]}
+        return jsonify({'activities': activities[:limit]}), 200
 
     except Exception as e:
         print(f"Activity feed error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # RECEIPTS
 # ============================================================================
 
-@admin_router.get('/receipts')
-async def get_all_receipts(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/receipts', methods=['GET'])
+@jwt_required()
+def get_all_receipts():
     """Get all payment receipts"""
     try:
-        page = int(request.query_params.get('page', 1))
-        limit = int(request.query_params.get('limit', 50))
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 50, type=int)
         offset = (page - 1) * limit
 
         try:
             receipts = BaseModel.execute_query(
-                """SELECT 
-                    r.id,
-                    r.receipt_id,
-                    r.grand_total as total_amount,
-                    r.grand_total,
-                    r.payment_type,
-                    r.created_at,
-                    COALESCE(
-                        NULLIF(TRIM(r.buyer_name), ''),
-                        NULLIF(TRIM(CONCAT(b.first_name, ' ', b.last_name)), ''),
-                        'Guest Buyer'
-                    ) as buyer_name,
-                    COALESCE(
-                        NULLIF(TRIM(CONCAT(f.first_name, ' ', f.last_name)), ''),
-                        NULLIF(TRIM(CONCAT(fo.first_name, ' ', fo.last_name)), ''),
-                        'SmartFarm'
-                    ) as farmer_name,
-                    COALESCE(
-                        (SELECT STRING_AGG(ri.product_name, ', ') FROM receipt_items ri WHERE ri.receipt_id = r.id),
-                        'N/A'
-                    ) as product_name,
-                    COALESCE(
-                        (SELECT SUM(ri.quantity_kg) FROM receipt_items ri WHERE ri.receipt_id = r.id),
-                        0
-                    ) as quantity_kg
-                   FROM receipts r
-                   LEFT JOIN payments p ON r.payment_id = p.id
+                """SELECT p.*, o.order_number, o.status as order_status
+                   FROM payments p
                    LEFT JOIN orders o ON p.order_id = o.id
-                   LEFT JOIN farmers f ON r.farmer_id = f.id
-                   LEFT JOIN farmers fo ON o.farmer_id = fo.id
-                   LEFT JOIN buyers b ON r.buyer_id = b.id
-                   ORDER BY r.created_at DESC LIMIT %s OFFSET %s""",
+                   ORDER BY p.created_at DESC LIMIT %s OFFSET %s""",
                 (limit, offset), fetch_all=True
             ) or []
-        except Exception as query_err:
-            print(f"Error executing receipts query: {query_err}")
+        except Exception:
             receipts = []
 
-        return {'receipts': _serialize(receipts), 'total': len(receipts)}
+        return jsonify({'receipts': _serialize(receipts), 'total': len(receipts)}), 200
 
     except Exception as e:
         print(f"Get receipts error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
-
-
-@admin_router.post('/notifications')
-async def send_admin_notification(request: Request, user_id: str = Depends(get_current_user)):
-    """Send admin notification to farmers, buyers, or both (broadcast)"""
-    try:
-        data = await request.json()
-        target = data.get('target', 'both')  # 'farmers', 'buyers', 'both'
-        message = data.get('message', '').strip()
-
-        if not message:
-            return JSONResponse(status_code=400, content={'error': 'Message cannot be empty'})
-
-        # Find targets
-        user_ids = []
-        if target == 'farmers' or target == 'both':
-            farmers = BaseModel.execute_query("SELECT id FROM farmers WHERE is_active = true", fetch_all=True) or []
-            user_ids.extend([('farmer', f['id']) for f in farmers])
-
-        if target == 'buyers' or target == 'both':
-            buyers = BaseModel.execute_query("SELECT id FROM buyers WHERE is_verified = true", fetch_all=True) or []
-            user_ids.extend([('buyer', b['id']) for b in buyers])
-
-        # Insert notifications into database
-        inserted_count = 0
-        for utype, uid in user_ids:
-            try:
-                BaseModel.execute_insert(
-                    """INSERT INTO notifications (user_id, title, message, type)
-                       VALUES (%s, %s, %s, %s)""",
-                    (uid, 'Admin Announcement', message, 'announcement')
-                )
-                inserted_count += 1
-            except Exception as ins_err:
-                print(f"Failed to insert notification for {utype} user {uid}: {ins_err}")
-
-        return {'success': True, 'message': f'Announced successfully to {inserted_count} users.'}
-
-    except Exception as e:
-        print(f"Send admin notification error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
-
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # FARMER / BUYER PROFILES (Admin view)
 # ============================================================================
 
-@admin_router.get('/farmer-profiles')
-async def get_farmer_profiles(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/farmer-profiles', methods=['GET'])
+@jwt_required()
+def get_farmer_profiles():
     """Get all farmer profiles for admin"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         farmers = BaseModel.execute_query(
             """SELECT f.*, COUNT(DISTINCT p.id) as product_count,
                       COUNT(DISTINCT o.id) as order_count
@@ -785,17 +826,22 @@ async def get_farmer_profiles(request: Request, user_id: str = Depends(get_curre
             fetch_all=True
         ) or []
 
-        return {'farmers': _serialize(farmers)}
+        return jsonify({'farmers': _serialize(farmers)}), 200
 
     except Exception as e:
         print(f"Get farmer profiles error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.get('/buyer-profiles')
-async def get_buyer_profiles(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/buyer-profiles', methods=['GET'])
+@jwt_required()
+def get_buyer_profiles():
     """Get all buyer profiles for admin"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         buyers = BaseModel.execute_query(
             """SELECT b.*, COUNT(DISTINCT o.id) as order_count,
                       COALESCE(SUM(o.total_amount), 0) as total_spent
@@ -806,20 +852,25 @@ async def get_buyer_profiles(request: Request, user_id: str = Depends(get_curren
             fetch_all=True
         ) or []
 
-        return {'buyers': _serialize(buyers)}
+        return jsonify({'buyers': _serialize(buyers)}), 200
 
     except Exception as e:
         print(f"Get buyer profiles error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
 # PLATFORM EARNINGS
 # ============================================================================
 
-@admin_router.get('/platform-earnings')
-async def get_platform_earnings(request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/platform-earnings', methods=['GET'])
+@jwt_required()
+def get_platform_earnings():
     """Get platform earnings breakdown"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         try:
             earnings = BaseModel.execute_query(
                 "SELECT * FROM platform_earnings ORDER BY created_at DESC LIMIT 50",
@@ -828,17 +879,22 @@ async def get_platform_earnings(request: Request, user_id: str = Depends(get_cur
         except Exception:
             earnings = []
 
-        return {'earnings': _serialize(earnings)}
+        return jsonify({'earnings': _serialize(earnings)}), 200
 
     except Exception as e:
         print(f"Get platform earnings error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 
-@admin_router.post('/platform-earnings/{earning_id}/settle')
-async def settle_earning(earning_id: int, request: Request, user_id: str = Depends(get_current_user)):
+@admin_bp.route('/platform-earnings/<int:earning_id>/settle', methods=['POST'])
+@jwt_required()
+def settle_earning(earning_id):
     """Mark earning as settled"""
     try:
+        admin = _check_admin()
+        if not admin:
+            return jsonify({'error': 'Admin access required'}), 403
+
         try:
             BaseModel.execute_query(
                 "UPDATE platform_earnings SET settlement_status = 'settled', settled_at = NOW() WHERE id = %s",
@@ -847,44 +903,50 @@ async def settle_earning(earning_id: int, request: Request, user_id: str = Depen
         except Exception:
             pass
 
-        return {'success': True, 'message': 'Marked as settled'}
+        return jsonify({'success': True, 'message': 'Marked as settled'}), 200
 
     except Exception as e:
         print(f"Settle earning error: {e}")
-        return JSONResponse(status_code=500, content={'error': str(e)})
+        return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# SaaS ANALYTICS (frontend expects these) - Commented out to use saas_dashboard.py implementations
+# SaaS ANALYTICS (frontend expects these)
 # ============================================================================
 
-# @admin_router.get('/saas/analytics')
-# async def saas_analytics(request: Request, user_id: str = Depends(get_current_user)):
-#     """SaaS analytics overview"""
-#     try:
-#         return {'revenue': 0, 'orders': 0, 'users': 0, 'products': 0}
-#     except Exception as e:
-#         return JSONResponse(status_code=500, content={'error': str(e)})
+@admin_bp.route('/saas/analytics', methods=['GET'])
+@jwt_required()
+def saas_analytics():
+    """SaaS analytics overview"""
+    try:
+        return jsonify({'revenue': 0, 'orders': 0, 'users': 0, 'products': 0}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-# @admin_router.get('/saas/top-products')
-# async def saas_top_products(request: Request, user_id: str = Depends(get_current_user)):
-#     """Top products"""
-#     return []
+@admin_bp.route('/saas/top-products', methods=['GET'])
+@jwt_required()
+def saas_top_products():
+    """Top products"""
+    return jsonify([]), 200
 
-# @admin_router.get('/saas/revenue-breakdown')
-# async def saas_revenue_breakdown(request: Request, user_id: str = Depends(get_current_user)):
-#     """Revenue breakdown"""
-#     return []
+@admin_bp.route('/saas/revenue-breakdown', methods=['GET'])
+@jwt_required()
+def saas_revenue_breakdown():
+    """Revenue breakdown"""
+    return jsonify([]), 200
 
-# @admin_router.get('/saas/monthly-sales')
-# async def saas_monthly_sales(request: Request, user_id: str = Depends(get_current_user)):
-#     """Monthly sales"""
-#     return []
+@admin_bp.route('/saas/monthly-sales', methods=['GET'])
+@jwt_required()
+def saas_monthly_sales():
+    """Monthly sales"""
+    return jsonify([]), 200
 
-# @admin_router.get('/saas/profile')
-# async def saas_profile(request: Request, user_id: str = Depends(get_current_user)):
-#     """Admin profile"""
-#     try:
-#         admin = _check_admin(user_id)
-#         return admin or {'id': user_id, 'role': 'admin'}
-#     except Exception:
-#         return {}
+@admin_bp.route('/saas/profile', methods=['GET'])
+@jwt_required()
+def saas_profile():
+    """Admin profile"""
+    try:
+        user_id = get_jwt_identity()
+        admin = _check_admin()
+        return jsonify(admin or {'id': user_id, 'role': 'admin'}), 200
+    except Exception:
+        return jsonify({}), 200

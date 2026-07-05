@@ -40,8 +40,8 @@ export default function Register() {
       toast.error('Please enter a password');
       return false;
     }
-    if (formData.password.length < 6) {
-      toast.error('Password must be at least 6 characters');
+    if (formData.password.length < 8) {
+      toast.error('Password must be at least 8 characters');
       return false;
     }
     if (formData.password !== formData.confirmPassword) {
@@ -69,7 +69,7 @@ export default function Register() {
       toast.success('Registration successful!');
       navigate(role === 'farmer' ? '/farmer/dashboard' : '/buyer/marketplace');
     } catch (error) {
-      toast.error(error.response?.data?.error || error.response?.data?.message || 'Registration failed');
+      toast.error(error.response?.data?.error || 'Registration failed');
     }
   };
 
