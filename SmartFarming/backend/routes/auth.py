@@ -1130,3 +1130,357 @@ def verification_status():
         print(f"Verification status error: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+# ============================================================================
+# FASTAPI ROUTER — required by main.py (FastAPI entry point on Render)
+# Wraps the same business logic as the Flask Blueprint above.
+# ============================================================================
+
+from fastapi import APIRouter, Request as FastAPIRequest
+from fastapi.responses import JSONResponse
+from utils.jwt_utils import (
+    create_access_token as fa_create_access_token,
+    create_refresh_token as fa_create_refresh_token,
+    decode_token as fa_decode_token,
+)
+
+auth_router = APIRouter(prefix='/api/auth', tags=['Authentication'])
+
+
+def _json(data, status_code=200):
+    return JSONResponse(content=data, status_code=status_code)
+
+
+@auth_router.post('/register')
+async def fa_register(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        role = data.get('role', 'buyer')
+        first_name = data.get('first_name', '').strip()
+        last_name = data.get('last_name', '').strip()
+        email = data.get('email', '').strip()
+        phone = data.get('phone', '').strip()
+        password = data.get('password', '')
+        location = data.get('location', '')
+        if not first_name:
+            return _json({'error': 'First name is required'}, 400)
+        if not password or len(password) < 6:
+            return _json({'error': 'Password must be at least 6 characters'}, 400)
+        password_hash = generate_password_hash(password)
+        if role == 'farmer':
+            if not email:
+                return _json({'error': 'Email required for farmer registration'}, 400)
+            existing = BaseModel.execute_query("SELECT id FROM farmers WHERE email = %s", (email,), fetch_one=True)
+            if existing:
+                return _json({'error': 'Email already registered'}, 409)
+            user_id = BaseModel.execute_insert(
+                "INSERT INTO farmers (first_name, last_name, email, phone, password_hash, location) VALUES (%s, %s, %s, %s, %s, %s)",
+                (first_name, last_name, email, phone, password_hash, location))
+            try:
+                BaseModel.execute_insert("INSERT INTO wallet (farmer_id, balance, total_earnings) VALUES (%s, 0, 0)", (user_id,))
+            except Exception:
+                pass
+        elif role == 'buyer':
+            if not phone:
+                return _json({'error': 'Phone required for buyer registration'}, 400)
+            existing = BaseModel.execute_query("SELECT id FROM buyers WHERE phone = %s", (phone,), fetch_one=True)
+            if existing:
+                return _json({'error': 'Phone number already registered'}, 409)
+            user_id = BaseModel.execute_insert(
+                "INSERT INTO buyers (first_name, last_name, email, phone, password_hash, location, buyer_id) VALUES (%s, %s, %s, %s, %s, %s, NULL)",
+                (first_name, last_name, email, phone, password_hash, location))
+            BaseModel.execute_query("UPDATE buyers SET buyer_id = %s WHERE id = %s", (user_id, user_id))
+        else:
+            return _json({'error': 'Invalid role. Use farmer or buyer'}, 400)
+        access_token = fa_create_access_token(identity=str(user_id), additional_claims={'role': role, 'user_id': user_id})
+        return _json({'message': 'Registration successful', 'access_token': access_token,
+            'user': {'id': user_id, 'name': f"{first_name} {last_name}".strip(), 'first_name': first_name,
+                     'last_name': last_name, 'email': email, 'phone': phone, 'role': role}}, 201)
+    except Exception as e:
+        print(f"Registration error: {e}")
+        return _json({'error': str(e)}, 500)
+
+
+@auth_router.post('/login')
+async def fa_login(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        role = data.get('role', 'farmer')
+        password = data.get('password', '')
+        if not password:
+            return _json({'error': 'Password required'}, 400)
+        user = None
+        if role == 'farmer':
+            email = data.get('email', '')
+            if not email:
+                return _json({'error': 'Email required for farmer login'}, 400)
+            user = BaseModel.execute_query("SELECT * FROM farmers WHERE email = %s", (email,), fetch_one=True)
+        elif role == 'buyer':
+            phone = data.get('phone', '')
+            if not phone:
+                return _json({'error': 'Phone required for buyer login'}, 400)
+            user = BaseModel.execute_query("SELECT * FROM buyers WHERE phone = %s", (phone,), fetch_one=True)
+        elif role == 'admin':
+            email = data.get('email', '')
+            if not email:
+                return _json({'error': 'Email required for admin login'}, 400)
+            user = BaseModel.execute_query("SELECT *, admin_id as id FROM admins WHERE email = %s", (email,), fetch_one=True)
+        else:
+            return _json({'error': 'Invalid role'}, 400)
+        if not user:
+            msg = 'No account found with this phone number. Please register first.' if role == 'buyer' else 'No account found with this email. Please register first.'
+            return _json({'error': msg}, 401)
+        if not check_password_hash(user['password_hash'], password):
+            return _json({'error': 'Incorrect password. Please try again.'}, 401)
+        user_id = user.get('id') or user.get('admin_id')
+        user_email = user.get('email', '')
+        first_name = user.get('first_name', '')
+        last_name = user.get('last_name', '')
+        name = f"{first_name} {last_name}".strip()
+        if role in ('admin', 'farmer'):
+            identity = str(user_id)
+            access_token = fa_create_access_token(identity=identity, additional_claims={'role': role, 'user_id': user_id})
+            refresh_token = fa_create_refresh_token(identity=identity)
+            return _json({'message': 'Login successful', 'access_token': access_token, 'refresh_token': refresh_token,
+                'user': {'id': user_id, 'name': name, 'first_name': first_name, 'last_name': last_name,
+                         'email': user_email, 'phone': user.get('phone', ''), 'role': role, 'location': user.get('location', '')}})
+        if not user_email:
+            identity = str(user_id)
+            access_token = fa_create_access_token(identity=identity, additional_claims={'role': role, 'user_id': user_id})
+            refresh_token = fa_create_refresh_token(identity=identity)
+            return _json({'message': 'Login successful', 'access_token': access_token, 'refresh_token': refresh_token,
+                'user': {'id': user_id, 'name': name, 'first_name': first_name, 'last_name': last_name,
+                         'email': user_email, 'phone': user.get('phone', ''), 'role': role, 'location': user.get('location', '')}})
+        otp_code = generate_otp()
+        now = datetime.now()
+        expires_at = now + timedelta(minutes=5)
+        BaseModel.execute_insert("INSERT INTO otps (email, otp, created_at, expires_at) VALUES (%s, %s, %s, %s)", (user_email, otp_code, now, expires_at))
+        email_body = _build_otp_html('Your login verification OTP is:', otp_code, 'Valid for 5 minutes')
+        email_sent = send_email(user_email, 'SmartFarm - Login OTP', email_body)
+        if not email_sent:
+            return _json({'error': 'Failed to send OTP email. Please try again.'}, 500)
+        return _json({'message': 'OTP sent to your email', 'otp_required': True,
+            'user': {'id': user_id, 'name': name, 'first_name': first_name, 'last_name': last_name,
+                     'email': user_email, 'phone': user.get('phone', ''), 'role': role, 'location': user.get('location', '')}})
+    except Exception as e:
+        error_str = str(e).lower()
+        if 'connection' in error_str or 'server closed' in error_str or 'timeout' in error_str or 'database' in error_str:
+            print(f"[AUTH] Database error during login: {e}")
+            return _json({'error': 'Server is warming up. Please try again in a moment.', 'error_code': 'database_error'}, 503)
+        print(f"[AUTH] Login error: {e}")
+        return _json({'error': 'Something went wrong. Please try again.', 'error_code': 'server_error'}, 500)
+
+
+@auth_router.post('/complete-login')
+async def fa_complete_login(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        email = data.get('email', '').strip()
+        otp_code = data.get('otp', '').strip()
+        role = data.get('role', 'farmer')
+        if not email or not otp_code:
+            return _json({'error': 'Email and OTP are required'}, 400)
+        otp_record = BaseModel.execute_query(
+            "SELECT * FROM otps WHERE email = %s AND otp = %s AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+            (email, otp_code), fetch_one=True)
+        if not otp_record:
+            return _json({'error': 'Invalid or expired OTP'}, 400)
+        BaseModel.execute_query("DELETE FROM otps WHERE id = %s", (otp_record['id'],))
+        user = None
+        if role == 'farmer':
+            user = BaseModel.execute_query("SELECT * FROM farmers WHERE email = %s", (email,), fetch_one=True)
+        elif role == 'buyer':
+            user = BaseModel.execute_query("SELECT * FROM buyers WHERE email = %s", (email,), fetch_one=True)
+        elif role == 'admin':
+            user = BaseModel.execute_query("SELECT *, admin_id as id FROM admins WHERE email = %s", (email,), fetch_one=True)
+        if not user:
+            return _json({'error': 'User not found'}, 404)
+        user_id = user.get('id') or user.get('admin_id')
+        identity = str(user_id)
+        first_name = user.get('first_name', '')
+        last_name = user.get('last_name', '')
+        name = f"{first_name} {last_name}".strip()
+        access_token = fa_create_access_token(identity=identity, additional_claims={'role': role, 'user_id': user_id})
+        refresh_token = fa_create_refresh_token(identity=identity)
+        return _json({'message': 'Login successful', 'verified': True, 'access_token': access_token, 'refresh_token': refresh_token,
+            'user': {'id': user_id, 'name': name, 'first_name': first_name, 'last_name': last_name,
+                     'email': user.get('email', ''), 'phone': user.get('phone', ''), 'role': role, 'location': user.get('location', '')}})
+    except Exception as e:
+        print(f"Complete login error: {e}")
+        return _json({'error': str(e)}, 500)
+
+
+@auth_router.post('/send-otp')
+async def fa_send_otp(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        email = data.get('email', '').strip()
+        if not email:
+            return _json({'success': False, 'error': 'Email is required'}, 400)
+        if not validate_email(email):
+            return _json({'success': False, 'error': 'Invalid email format'}, 400)
+        otp_code = generate_otp()
+        now = datetime.now()
+        expires_at = now + timedelta(minutes=5)
+        BaseModel.execute_insert("INSERT INTO otps (email, otp, created_at, expires_at) VALUES (%s, %s, %s, %s)", (email, otp_code, now, expires_at))
+        email_body = _build_otp_html('Your login verification OTP is:', otp_code, 'Valid for 5 minutes')
+        email_sent = send_email(email, 'SmartFarm - Login OTP', email_body)
+        if not email_sent:
+            return _json({'success': False, 'error': 'Failed to send OTP email.'}, 500)
+        return _json({'success': True, 'message': 'OTP sent to your email'})
+    except Exception as e:
+        print(f"Send OTP error: {e}")
+        return _json({'success': False, 'error': str(e)}, 500)
+
+
+@auth_router.post('/verify-otp')
+async def fa_verify_otp(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        email = data.get('email', '').strip()
+        otp_code = data.get('otp', '').strip()
+        if not email or not otp_code:
+            return _json({'success': False, 'error': 'Email and OTP are required'}, 400)
+        otp_record = BaseModel.execute_query(
+            "SELECT * FROM otps WHERE email = %s AND otp = %s AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+            (email, otp_code), fetch_one=True)
+        if not otp_record:
+            return _json({'success': False, 'verified': False, 'error': 'Invalid or expired OTP'}, 400)
+        BaseModel.execute_query("DELETE FROM otps WHERE id = %s", (otp_record['id'],))
+        return _json({'success': True, 'verified': True})
+    except Exception as e:
+        print(f"Verify OTP error: {e}")
+        return _json({'success': False, 'error': str(e)}, 500)
+
+
+@auth_router.post('/forgot-password')
+async def fa_forgot_password(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        email = data.get('email', '').strip()
+        if not email:
+            return _json({'error': 'Email is required'}, 400)
+        user = BaseModel.execute_query('SELECT id, email FROM farmers WHERE email = %s', (email,), fetch_one=True)
+        if not user:
+            user = BaseModel.execute_query('SELECT id, email FROM buyers WHERE email = %s', (email,), fetch_one=True)
+        if not user:
+            return _json({'error': 'Email not found'}, 404)
+        otp_code = str(random.randint(100000, 999999))
+        BaseModel.execute_insert("INSERT INTO otps (email, otp, created_at, expires_at) VALUES (%s, %s, NOW(), NOW() + INTERVAL '10 minutes')", (email, otp_code))
+        email_body = _build_otp_html('Your password reset OTP is:', otp_code)
+        email_sent = send_email(email, 'SmartFarm - Password Reset OTP', email_body)
+        if not email_sent:
+            return _json({'error': 'Failed to send OTP email'}, 500)
+        return _json({'success': True, 'message': 'OTP sent to your email'})
+    except Exception as e:
+        print(f"Forgot password error: {e}")
+        return _json({'error': str(e)}, 500)
+
+
+@auth_router.post('/reset-password')
+async def fa_reset_password(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        email = data.get('email', '').strip()
+        otp = data.get('otp', '').strip()
+        new_password = data.get('new_password', '')
+        if not all([email, otp, new_password]):
+            return _json({'error': 'All fields required'}, 400)
+        if len(new_password) < 6:
+            return _json({'error': 'Password must be at least 6 characters'}, 400)
+        stored = BaseModel.execute_query(
+            'SELECT * FROM otps WHERE email = %s AND otp = %s AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1',
+            (email, otp), fetch_one=True)
+        if not stored:
+            return _json({'error': 'Invalid or expired OTP'}, 400)
+        hashed = generate_password_hash(new_password)
+        updated = False
+        result = BaseModel.execute_query('SELECT id FROM farmers WHERE email = %s', (email,), fetch_one=True)
+        if result:
+            BaseModel.execute_query('UPDATE farmers SET password_hash = %s WHERE email = %s', (hashed, email))
+            updated = True
+        if not updated:
+            result = BaseModel.execute_query('SELECT id FROM buyers WHERE email = %s', (email,), fetch_one=True)
+            if result:
+                BaseModel.execute_query('UPDATE buyers SET password_hash = %s WHERE email = %s', (hashed, email))
+        BaseModel.execute_query('DELETE FROM otps WHERE email = %s', (email,))
+        return _json({'success': True, 'message': 'Password reset successfully'})
+    except Exception as e:
+        print(f"Reset password error: {e}")
+        return _json({'error': str(e)}, 500)
+
+
+@auth_router.post('/refresh')
+async def fa_refresh_token(request: FastAPIRequest):
+    try:
+        data = await request.json()
+        refresh_token_str = data.get('refresh_token') if data else None
+        if not refresh_token_str:
+            return _json({'error': 'refresh_token_missing', 'message': 'Refresh token is required'}, 400)
+        try:
+            decoded = fa_decode_token(refresh_token_str)
+        except Exception:
+            return _json({'error': 'refresh_token_expired', 'message': 'Refresh token is invalid or expired.'}, 401)
+        user_id = decoded.get('sub')
+        if not user_id:
+            return _json({'error': 'refresh_token_invalid', 'message': 'Invalid refresh token'}, 401)
+        additional_claims = {}
+        if 'role' in decoded:
+            additional_claims['role'] = decoded['role']
+        if 'user_id' in decoded:
+            additional_claims['user_id'] = decoded['user_id']
+        new_access_token = fa_create_access_token(identity=str(user_id), additional_claims=additional_claims)
+        return _json({'access_token': new_access_token})
+    except Exception as e:
+        print(f"[AUTH] Refresh error: {e}")
+        return _json({'error': 'server_error', 'message': 'Failed to refresh token'}, 500)
+
+
+@auth_router.post('/refresh-token')
+async def fa_refresh_token_alt(request: FastAPIRequest):
+    return await fa_refresh_token(request)
+
+
+@auth_router.get('/session/validate')
+async def fa_validate_session(request: FastAPIRequest):
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return _json({'valid': False, 'error': 'Token required'}, 401)
+        token = auth_header[7:]
+        decoded = fa_decode_token(token)
+        user_id = decoded.get('sub')
+        if not user_id:
+            return _json({'valid': False, 'error': 'Invalid token'}, 401)
+        user_info = None
+        role = None
+        farmer = BaseModel.execute_query('SELECT id, first_name, last_name, email, phone, location FROM farmers WHERE id = %s', (user_id,), fetch_one=True)
+        if farmer:
+            user_info = farmer
+            role = 'farmer'
+        if not user_info:
+            buyer = BaseModel.execute_query('SELECT id, first_name, last_name, email, phone, location FROM buyers WHERE id = %s', (user_id,), fetch_one=True)
+            if buyer:
+                user_info = buyer
+                role = 'buyer'
+        if not user_info:
+            admin = BaseModel.execute_query('SELECT admin_id as id, first_name, last_name, email FROM admins WHERE admin_id = %s', (user_id,), fetch_one=True)
+            if admin:
+                user_info = admin
+                role = 'admin'
+        if not user_info:
+            return _json({'valid': False, 'error': 'User not found'}, 404)
+        return _json({'valid': True, 'user': {
+            'id': user_info.get('id'), 'first_name': user_info.get('first_name', ''),
+            'last_name': user_info.get('last_name', ''),
+            'name': f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
+            'email': user_info.get('email', ''), 'phone': user_info.get('phone', ''),
+            'role': role, 'location': user_info.get('location', '')}})
+    except Exception as e:
+        print(f"[AUTH] Session validate error: {e}")
+        return _json({'valid': False, 'error': 'server_error'}, 500)
+
+
+@auth_router.post('/logout')
+async def fa_logout():
+    return _json({'message': 'Logout successful'})
