@@ -47,7 +47,7 @@ function App() {
   }, [initializeAuth]);
 
   return (
-    <Router basename={process.env.PUBLIC_URL || ''}>
+    <Router basename={process.env.PUBLIC_URL === '.' ? '' : (process.env.PUBLIC_URL || '')}>
       <GlobalCursor />
       <Toaster
         position="top-right"
