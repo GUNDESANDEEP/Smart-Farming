@@ -4,8 +4,22 @@ Handles: Razorpay orders, payment verification, direct sales,
          receipts, PDF generation, receipt delivery, transaction history
 """
 
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+try:
+    from flask import Blueprint, request, jsonify
+    from flask_jwt_extended import jwt_required, get_jwt_identity
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    class _StubBP:
+        def __init__(self, *a, **kw): pass
+        def route(self, *a, **kw):
+            def decorator(f): return f
+            return decorator
+    Blueprint = lambda *a, **kw: _StubBP()
+    def jwt_required(*a, **kw):
+        def decorator(f): return f
+        return decorator
+    def get_jwt_identity(): return None
 from models.models import BaseModel
 from datetime import datetime
 from dotenv import load_dotenv
@@ -57,7 +71,10 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Blueprint
 # ---------------------------------------------------------------------------
-payments_bp = Blueprint('payments', __name__)
+if FLASK_AVAILABLE:
+    payments_bp = Blueprint('payments', __name__)
+else:
+    payments_bp = _StubBP()
 
 # ============================================================================
 # HELPERS
@@ -932,3 +949,68 @@ def farmer_sales_history():
     except Exception as e:
         print(f"Farmer sales history error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# FASTAPI ROUTER — required by main.py
+# ============================================================================
+from fastapi import APIRouter, Request as FastAPIRequest
+from fastapi.responses import JSONResponse
+from utils.jwt_utils import decode_token as fa_decode_token
+
+payments_router = APIRouter(prefix='/api/payments', tags=['Payments'])
+
+def _pjson(data, code=200):
+    return JSONResponse(content=data, status_code=code)
+
+def _pay_uid(request):
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return None
+    try:
+        decoded = fa_decode_token(auth[7:])
+        return decoded.get('sub')
+    except:
+        return None
+
+@payments_router.get('/admin/revenue')
+async def fa_admin_revenue():
+    try:
+        r = BaseModel.execute_query("SELECT COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'completed'", fetch_one=True)
+        return _pjson({'total': float(r['total']) if r else 0})
+    except: return _pjson({'total': 0})
+
+@payments_router.get('/admin/transactions')
+async def fa_admin_transactions():
+    try:
+        txns = BaseModel.execute_query("SELECT * FROM payments ORDER BY created_at DESC LIMIT 50", fetch_all=True) or []
+        result = []
+        for t in txns:
+            out = {}
+            for k, v in t.items():
+                if hasattr(v, 'isoformat'): out[k] = v.isoformat()
+                elif isinstance(v, __import__('decimal').Decimal): out[k] = float(v)
+                else: out[k] = v
+            result.append(out)
+        return _pjson(result)
+    except: return _pjson([])
+
+@payments_router.get('/history')
+async def fa_payment_history(request: FastAPIRequest):
+    try:
+        uid = _pay_uid(request)
+        if not uid: return _pjson({'error': 'Auth required'}, 401)
+        txns = BaseModel.execute_query(
+            "SELECT * FROM payments WHERE user_id = %s ORDER BY created_at DESC LIMIT 50",
+            (uid,), fetch_all=True) or []
+        result = []
+        for t in txns:
+            out = {}
+            for k, v in t.items():
+                if hasattr(v, 'isoformat'): out[k] = v.isoformat()
+                elif isinstance(v, __import__('decimal').Decimal): out[k] = float(v)
+                else: out[k] = v
+            result.append(out)
+        return _pjson({'payments': result})
+    except Exception as e:
+        return _pjson({'error': str(e)}, 500)

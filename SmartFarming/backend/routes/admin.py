@@ -1,10 +1,25 @@
 """
 Admin Module - User Management, Product Approval, Analytics
-Flask Blueprint (compatible with app.py)
+Flask Blueprint (compatible with app.py) + FastAPI Router (compatible with main.py)
 """
 
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+try:
+    from flask import Blueprint, request, jsonify
+    from flask_jwt_extended import jwt_required, get_jwt_identity
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    class _StubBP:
+        def __init__(self, *a, **kw): pass
+        def route(self, *a, **kw):
+            def decorator(f): return f
+            return decorator
+    Blueprint = lambda *a, **kw: _StubBP()
+    def jwt_required(*a, **kw):
+        def decorator(f): return f
+        return decorator
+    def get_jwt_identity(): return None
+
 from models.models import (
     User, Farmer, Buyer, Admin, Product, Order, Payment, Review, Notification,
     BaseModel
@@ -13,7 +28,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import json
 
-admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
+if FLASK_AVAILABLE:
+    admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
+else:
+    admin_bp = _StubBP()
+
 
 # ============================================================================
 # HELPER - Verify admin & serialize
@@ -950,3 +969,455 @@ def saas_profile():
         return jsonify(admin or {'id': user_id, 'role': 'admin'}), 200
     except Exception:
         return jsonify({}), 200
+
+
+# ============================================================================
+# FASTAPI ROUTER — required by main.py
+# ============================================================================
+from fastapi import APIRouter, Request as FastAPIRequest
+from fastapi.responses import JSONResponse
+from utils.jwt_utils import decode_token as fa_decode_token
+
+admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
+
+def _ajson(data, status_code=200):
+    return JSONResponse(content=data, status_code=status_code)
+
+def _fa_check_admin(request):
+    """Check admin from FastAPI request. Returns (admin_dict, user_id) or (None, None)."""
+    try:
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return None, None
+        decoded = fa_decode_token(auth[7:])
+        user_id = decoded.get('sub')
+        role = decoded.get('role', '')
+        if role != 'admin':
+            return None, user_id
+        admin = BaseModel.execute_query(
+            "SELECT *, admin_id as id FROM admins WHERE admin_id = %s",
+            (int(user_id),), fetch_one=True
+        )
+        return admin, user_id
+    except Exception:
+        return None, None
+
+@admin_router.get('/dashboard')
+async def fa_dashboard(request: FastAPIRequest):
+    try:
+        admin, uid = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        stats = {}
+        r = BaseModel.execute_query("SELECT COUNT(*) as cnt FROM farmers", fetch_one=True)
+        stats['total_farmers'] = r['cnt'] if r else 0
+        r = BaseModel.execute_query("SELECT COUNT(*) as cnt FROM buyers", fetch_one=True)
+        stats['total_buyers'] = r['cnt'] if r else 0
+        r = BaseModel.execute_query("SELECT COUNT(*) as cnt FROM products", fetch_one=True)
+        stats['total_products'] = r['cnt'] if r else 0
+        r = BaseModel.execute_query("SELECT COUNT(*) as cnt FROM products WHERE status = 'pending'", fetch_one=True)
+        stats['pending_products'] = r['cnt'] if r else 0
+        r = BaseModel.execute_query("SELECT COUNT(*) as cnt, COALESCE(SUM(total_amount), 0) as revenue FROM orders", fetch_one=True)
+        stats['total_orders'] = r['cnt'] if r else 0
+        stats['total_revenue'] = float(r['revenue'] or 0) if r else 0
+        return _ajson({'success': True, 'total_users': stats['total_farmers'] + stats['total_buyers'],
+            'total_orders': stats['total_orders'], 'total_revenue': stats['total_revenue'],
+            'pending_products': stats['pending_products'], 'stats': stats})
+    except Exception as e:
+        print(f"Dashboard error: {e}")
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/users')
+async def fa_get_users(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        farmers = BaseModel.execute_query(
+            "SELECT id, first_name, last_name, email, phone, location, is_active, created_at FROM farmers ORDER BY created_at DESC",
+            fetch_all=True) or []
+        buyers = BaseModel.execute_query(
+            "SELECT id, first_name, last_name, email, phone, location, is_verified, created_at FROM buyers ORDER BY created_at DESC",
+            fetch_all=True) or []
+        return _ajson({'success': True, 'farmers': _serialize(farmers), 'buyers': _serialize(buyers),
+            'total_farmers': len(farmers), 'total_buyers': len(buyers)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/users/{target_user_id}')
+async def fa_get_user_detail(target_user_id: str, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        user = BaseModel.execute_query("SELECT *, 'farmer' as role FROM farmers WHERE id = %s", (target_user_id,), fetch_one=True)
+        if not user:
+            user = BaseModel.execute_query("SELECT *, 'buyer' as role FROM buyers WHERE id = %s", (target_user_id,), fetch_one=True)
+        if not user:
+            return _ajson({'error': 'User not found'}, 404)
+        return _ajson({'user': _serialize_one(user)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/users/{target_user_id}/suspend')
+async def fa_suspend_user(target_user_id: str, request: FastAPIRequest):
+    try:
+        admin, uid = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        data = await request.json()
+        role = data.get('role', '')
+        updated = False
+        if role == 'farmer' or not role:
+            r = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (target_user_id,), fetch_one=True)
+            if r:
+                BaseModel.execute_query("UPDATE farmers SET is_active = false WHERE id = %s", (target_user_id,))
+                updated = True
+        if not updated and (role == 'buyer' or not role):
+            r = BaseModel.execute_query("SELECT id FROM buyers WHERE id = %s", (target_user_id,), fetch_one=True)
+            if r:
+                BaseModel.execute_query("UPDATE buyers SET is_verified = false WHERE id = %s", (target_user_id,))
+                updated = True
+        if not updated:
+            return _ajson({'error': 'User not found'}, 404)
+        return _ajson({'message': 'User suspended successfully'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/users/{target_user_id}/activate')
+async def fa_activate_user(target_user_id: str, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        data = await request.json()
+        role = data.get('role', '')
+        updated = False
+        if role == 'farmer' or not role:
+            r = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (target_user_id,), fetch_one=True)
+            if r:
+                BaseModel.execute_query("UPDATE farmers SET is_active = true WHERE id = %s", (target_user_id,))
+                updated = True
+        if not updated and (role == 'buyer' or not role):
+            r = BaseModel.execute_query("SELECT id FROM buyers WHERE id = %s", (target_user_id,), fetch_one=True)
+            if r:
+                BaseModel.execute_query("UPDATE buyers SET is_verified = true WHERE id = %s", (target_user_id,))
+                updated = True
+        if not updated:
+            return _ajson({'error': 'User not found'}, 404)
+        return _ajson({'message': 'User activated successfully'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/users/{target_user_id}/delete')
+async def fa_delete_user(target_user_id: str, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        data = await request.json()
+        role = data.get('role', '')
+        deleted = False
+        if role == 'farmer' or not role:
+            r = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (target_user_id,), fetch_one=True)
+            if r:
+                for tbl in ['products', 'orders', 'wallet']:
+                    try: BaseModel.execute_query(f"DELETE FROM {tbl} WHERE farmer_id = %s", (target_user_id,))
+                    except: pass
+                BaseModel.execute_query("DELETE FROM farmers WHERE id = %s", (target_user_id,))
+                deleted = True
+        if not deleted and (role == 'buyer' or not role):
+            r = BaseModel.execute_query("SELECT id FROM buyers WHERE id = %s", (target_user_id,), fetch_one=True)
+            if r:
+                for tbl in ['orders', 'cart']:
+                    try: BaseModel.execute_query(f"DELETE FROM {tbl} WHERE buyer_id = %s", (target_user_id,))
+                    except: pass
+                BaseModel.execute_query("DELETE FROM buyers WHERE id = %s", (target_user_id,))
+                deleted = True
+        if not deleted:
+            return _ajson({'error': 'User not found'}, 404)
+        return _ajson({'message': 'User permanently deleted'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/farmers/pending-verification')
+async def fa_pending_farmers(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        page = int(request.query_params.get('page', 1))
+        limit = int(request.query_params.get('limit', 20))
+        offset = (page - 1) * limit
+        farmers = BaseModel.execute_query(
+            "SELECT f.* FROM farmers f WHERE f.is_verified = FALSE ORDER BY f.created_at ASC LIMIT %s OFFSET %s",
+            (limit, offset), fetch_all=True) or []
+        return _ajson({'farmers': _serialize(farmers), 'page': page, 'limit': limit})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/farmers/{farmer_id}/verify')
+async def fa_verify_farmer(farmer_id: int, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        BaseModel.execute_query("UPDATE farmers SET is_verified = TRUE WHERE id = %s", (farmer_id,))
+        return _ajson({'message': 'Farmer verified successfully'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/farmers/{farmer_id}/reject')
+async def fa_reject_farmer(farmer_id: int, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        BaseModel.execute_query("UPDATE farmers SET is_verified = FALSE WHERE id = %s", (farmer_id,))
+        return _ajson({'message': 'Farmer verification rejected'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/products/all')
+async def fa_all_products(request: FastAPIRequest):
+    try:
+        page = int(request.query_params.get('page', 1))
+        limit = int(request.query_params.get('limit', 100))
+        offset = (page - 1) * limit
+        status_filter = request.query_params.get('status', '')
+        query = "SELECT p.*, f.first_name, f.last_name FROM products p LEFT JOIN farmers f ON p.farmer_id = f.id"
+        params = []
+        if status_filter:
+            query += " WHERE p.status = %s"
+            params.append(status_filter)
+        query += " ORDER BY p.created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        products = BaseModel.execute_query(query, tuple(params), fetch_all=True) or []
+        return _ajson({'products': _serialize(products), 'total': len(products)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/products/pending-approval')
+async def fa_pending_products(request: FastAPIRequest):
+    try:
+        page = int(request.query_params.get('page', 1))
+        limit = int(request.query_params.get('limit', 50))
+        offset = (page - 1) * limit
+        products = BaseModel.execute_query(
+            "SELECT p.*, f.first_name, f.last_name FROM products p LEFT JOIN farmers f ON p.farmer_id = f.id WHERE p.status = 'pending' ORDER BY p.created_at ASC LIMIT %s OFFSET %s",
+            (limit, offset), fetch_all=True) or []
+        return _ajson({'products': _serialize(products), 'page': page, 'limit': limit})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/products/{product_id}/approve')
+async def fa_approve_product(product_id: int):
+    try:
+        BaseModel.execute_query("UPDATE products SET status = 'approved' WHERE id = %s", (product_id,))
+        return _ajson({'message': 'Product approved successfully'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/products/{product_id}/reject')
+async def fa_reject_product(product_id: int):
+    try:
+        BaseModel.execute_query("UPDATE products SET status = 'rejected' WHERE id = %s", (product_id,))
+        return _ajson({'message': 'Product rejected'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/analytics/revenue')
+async def fa_analytics_revenue(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        days = int(request.query_params.get('days', 30))
+        start_date = datetime.now() - timedelta(days=days)
+        analytics = BaseModel.execute_query(
+            "SELECT DATE(o.created_at) as date, SUM(o.total_amount) as daily_revenue, COUNT(*) as order_count FROM orders o WHERE o.created_at >= %s AND o.status = 'delivered' GROUP BY DATE(o.created_at) ORDER BY date DESC",
+            (start_date,), fetch_all=True) or []
+        return _ajson({'period_days': days, 'analytics': _serialize(analytics)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/analytics/orders')
+async def fa_analytics_orders(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        days = int(request.query_params.get('days', 30))
+        start_date = datetime.now() - timedelta(days=days)
+        analytics = BaseModel.execute_query(
+            "SELECT status, COUNT(*) as count, AVG(total_amount) as avg_price, SUM(total_amount) as total_price FROM orders WHERE created_at >= %s GROUP BY status",
+            (start_date,), fetch_all=True) or []
+        return _ajson({'period_days': days, 'analytics': _serialize(analytics)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/analytics/users')
+async def fa_analytics_users(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        days = int(request.query_params.get('days', 30))
+        start_date = datetime.now() - timedelta(days=days)
+        fc = BaseModel.execute_query("SELECT COUNT(*) as count FROM farmers WHERE created_at >= %s", (start_date,), fetch_one=True)
+        bc = BaseModel.execute_query("SELECT COUNT(*) as count FROM buyers WHERE created_at >= %s", (start_date,), fetch_one=True)
+        return _ajson({'period_days': days, 'analytics': [
+            {'role_name': 'farmer', 'count': fc['count'] if fc else 0},
+            {'role_name': 'buyer', 'count': bc['count'] if bc else 0}]})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/disputes')
+async def fa_disputes(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        try:
+            disputes = BaseModel.execute_query("SELECT * FROM disputes ORDER BY created_at DESC LIMIT 20", fetch_all=True) or []
+        except: disputes = []
+        return _ajson({'disputes': _serialize(disputes)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/disputes/{dispute_id}/resolve')
+async def fa_resolve_dispute(dispute_id: int, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        data = await request.json()
+        try: BaseModel.execute_query("UPDATE disputes SET status = 'resolved', resolution = %s WHERE id = %s", (data.get('resolution', ''), dispute_id))
+        except: pass
+        return _ajson({'message': 'Dispute resolved successfully'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/audit-logs')
+async def fa_audit_logs(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        try:
+            logs = BaseModel.execute_query("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 50", fetch_all=True) or []
+        except: logs = []
+        return _ajson({'logs': _serialize(logs)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/activity-feed')
+async def fa_activity_feed(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        activities = []
+        try:
+            orders = BaseModel.execute_query(
+                "SELECT o.id, o.status, o.total_amount, o.created_at, p.name as product_name FROM orders o LEFT JOIN products p ON o.product_id = p.id ORDER BY o.created_at DESC LIMIT 20",
+                fetch_all=True) or []
+            for o in orders:
+                activities.append({'type': 'order', 'message': f"Order for {o.get('product_name', 'product')} - {o.get('status', 'pending')}",
+                    'amount': float(o['total_amount']) if o.get('total_amount') else 0,
+                    'timestamp': o['created_at'].isoformat() if o.get('created_at') else None})
+        except: pass
+        try:
+            nf = BaseModel.execute_query("SELECT first_name, last_name, created_at FROM farmers ORDER BY created_at DESC LIMIT 5", fetch_all=True) or []
+            for f in nf:
+                activities.append({'type': 'new_farmer', 'message': f"New farmer: {f.get('first_name', '')} {f.get('last_name', '')}",
+                    'timestamp': f['created_at'].isoformat() if f.get('created_at') else None})
+        except: pass
+        activities.sort(key=lambda x: x.get('timestamp') or '', reverse=True)
+        return _ajson({'activities': activities[:20]})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/receipts')
+async def fa_receipts(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        try:
+            receipts = BaseModel.execute_query(
+                "SELECT p.*, o.order_number, o.status as order_status FROM payments p LEFT JOIN orders o ON p.order_id = o.id ORDER BY p.created_at DESC LIMIT 50",
+                fetch_all=True) or []
+        except: receipts = []
+        return _ajson({'receipts': _serialize(receipts), 'total': len(receipts)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/farmer-profiles')
+async def fa_farmer_profiles(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        farmers = BaseModel.execute_query(
+            "SELECT f.*, COUNT(DISTINCT p.id) as product_count FROM farmers f LEFT JOIN products p ON f.id = p.farmer_id GROUP BY f.id ORDER BY f.created_at DESC",
+            fetch_all=True) or []
+        return _ajson({'farmers': _serialize(farmers)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/buyer-profiles')
+async def fa_buyer_profiles(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        buyers = BaseModel.execute_query(
+            "SELECT b.*, COUNT(DISTINCT o.id) as order_count, COALESCE(SUM(o.total_amount), 0) as total_spent FROM buyers b LEFT JOIN orders o ON b.id = o.buyer_id GROUP BY b.id ORDER BY b.created_at DESC",
+            fetch_all=True) or []
+        return _ajson({'buyers': _serialize(buyers)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/platform-earnings')
+async def fa_platform_earnings(request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        try: earnings = BaseModel.execute_query("SELECT * FROM platform_earnings ORDER BY created_at DESC LIMIT 50", fetch_all=True) or []
+        except: earnings = []
+        return _ajson({'earnings': _serialize(earnings)})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.post('/platform-earnings/{earning_id}/settle')
+async def fa_settle_earning(earning_id: int, request: FastAPIRequest):
+    try:
+        admin, _ = _fa_check_admin(request)
+        if not admin:
+            return _ajson({'error': 'Admin access required'}, 403)
+        try: BaseModel.execute_query("UPDATE platform_earnings SET settlement_status = 'settled', settled_at = NOW() WHERE id = %s", (earning_id,))
+        except: pass
+        return _ajson({'success': True, 'message': 'Marked as settled'})
+    except Exception as e:
+        return _ajson({'error': str(e)}, 500)
+
+@admin_router.get('/saas/analytics')
+async def fa_saas_analytics(): return _ajson({'revenue': 0, 'orders': 0, 'users': 0, 'products': 0})
+
+@admin_router.get('/saas/top-products')
+async def fa_saas_top_products(): return _ajson([])
+
+@admin_router.get('/saas/revenue-breakdown')
+async def fa_saas_revenue_breakdown(): return _ajson([])
+
+@admin_router.get('/saas/monthly-sales')
+async def fa_saas_monthly_sales(): return _ajson([])
+
+@admin_router.get('/saas/profile')
+async def fa_saas_profile(request: FastAPIRequest):
+    try:
+        admin, uid = _fa_check_admin(request)
+        return _ajson(_serialize_one(admin) if admin else {'id': uid, 'role': 'admin'})
+    except: return _ajson({})

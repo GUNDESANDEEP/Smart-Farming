@@ -2,12 +2,31 @@
 Messaging Module - Real-time Chat Between Farmers and Buyers
 """
 
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+try:
+    from flask import Blueprint, request, jsonify
+    from flask_jwt_extended import jwt_required, get_jwt_identity
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    class _StubBP:
+        def __init__(self, *a, **kw): pass
+        def route(self, *a, **kw):
+            def decorator(f): return f
+            return decorator
+    Blueprint = lambda *a, **kw: _StubBP()
+    def jwt_required(*a, **kw):
+        def decorator(f): return f
+        return decorator
+    def get_jwt_identity(): return None
+
 from models.models import User, Message, Conversation, Notification, BaseModel
 from datetime import datetime
 
-messages_bp = Blueprint('messages', __name__, url_prefix='/api/messages')
+if FLASK_AVAILABLE:
+    messages_bp = Blueprint('messages', __name__, url_prefix='/api/messages')
+else:
+    messages_bp = _StubBP()
+
 
 # ============================================================================
 # CONVERSATIONS
@@ -310,3 +329,113 @@ def get_unread_count(conversation_id):
     except Exception as e:
         print(f"Get unread count error: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# FASTAPI ROUTER — required by main.py
+# ============================================================================
+from fastapi import APIRouter, Request as FastAPIRequest
+from fastapi.responses import JSONResponse
+from utils.jwt_utils import decode_token as fa_decode_token, get_current_user
+
+messages_router = APIRouter(prefix='/api/messages', tags=['Messages'])
+
+def _mjson(data, code=200):
+    return JSONResponse(content=data, status_code=code)
+
+def _get_uid(request):
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return None
+    try:
+        decoded = fa_decode_token(auth[7:])
+        return decoded.get('sub')
+    except:
+        return None
+
+@messages_router.get('/conversations')
+async def fa_get_conversations(request: FastAPIRequest):
+    try:
+        user_id = _get_uid(request)
+        if not user_id:
+            return _mjson({'error': 'Auth required'}, 401)
+        convos = BaseModel.execute_query(
+            "SELECT * FROM conversations WHERE farmer_id = %s OR buyer_id = %s ORDER BY updated_at DESC",
+            (user_id, user_id), fetch_all=True) or []
+        result = []
+        for c in convos:
+            out = {}
+            for k, v in c.items():
+                if hasattr(v, 'isoformat'):
+                    out[k] = v.isoformat()
+                else:
+                    out[k] = v
+            result.append(out)
+        return _mjson({'conversations': result})
+    except Exception as e:
+        return _mjson({'error': str(e)}, 500)
+
+@messages_router.post('/conversations')
+async def fa_create_conversation(request: FastAPIRequest):
+    try:
+        user_id = _get_uid(request)
+        if not user_id:
+            return _mjson({'error': 'Auth required'}, 401)
+        data = await request.json()
+        other_id = data.get('other_user_id')
+        if not other_id:
+            return _mjson({'error': 'other_user_id required'}, 400)
+        existing = BaseModel.execute_query(
+            "SELECT * FROM conversations WHERE (farmer_id = %s AND buyer_id = %s) OR (farmer_id = %s AND buyer_id = %s)",
+            (user_id, other_id, other_id, user_id), fetch_one=True)
+        if existing:
+            return _mjson({'conversation': {k: v.isoformat() if hasattr(v, 'isoformat') else v for k, v in existing.items()}})
+        conv_id = BaseModel.execute_insert(
+            "INSERT INTO conversations (farmer_id, buyer_id) VALUES (%s, %s)",
+            (user_id, other_id))
+        return _mjson({'conversation': {'id': conv_id}}, 201)
+    except Exception as e:
+        return _mjson({'error': str(e)}, 500)
+
+@messages_router.get('/conversations/{conversation_id}/messages')
+async def fa_get_messages(conversation_id: int, request: FastAPIRequest):
+    try:
+        user_id = _get_uid(request)
+        if not user_id:
+            return _mjson({'error': 'Auth required'}, 401)
+        messages = BaseModel.execute_query(
+            "SELECT * FROM messages WHERE conversation_id = %s ORDER BY created_at ASC",
+            (conversation_id,), fetch_all=True) or []
+        result = []
+        for m in messages:
+            out = {}
+            for k, v in m.items():
+                if hasattr(v, 'isoformat'):
+                    out[k] = v.isoformat()
+                else:
+                    out[k] = v
+            result.append(out)
+        return _mjson({'messages': result})
+    except Exception as e:
+        return _mjson({'error': str(e)}, 500)
+
+@messages_router.post('/conversations/{conversation_id}/messages')
+async def fa_send_message(conversation_id: int, request: FastAPIRequest):
+    try:
+        user_id = _get_uid(request)
+        if not user_id:
+            return _mjson({'error': 'Auth required'}, 401)
+        data = await request.json()
+        content = data.get('content', '')
+        receiver_id = data.get('receiver_id')
+        if not content:
+            return _mjson({'error': 'Message content required'}, 400)
+        msg_id = BaseModel.execute_insert(
+            "INSERT INTO messages (conversation_id, sender_id, receiver_id, content) VALUES (%s, %s, %s, %s)",
+            (conversation_id, user_id, receiver_id, content))
+        try:
+            BaseModel.execute_query("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conversation_id,))
+        except: pass
+        return _mjson({'message': {'id': msg_id, 'content': content}}, 201)
+    except Exception as e:
+        return _mjson({'error': str(e)}, 500)
