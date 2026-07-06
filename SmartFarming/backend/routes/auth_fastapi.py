@@ -17,6 +17,174 @@ from utils.jwt_utils import create_access_token, get_current_user
 
 auth_router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
+
+# ============================================================================
+# UNIFIED LOGIN — handles farmer, buyer, admin (email OR phone)
+# Frontend calls POST /api/auth/login for ALL roles
+# OTP is only for registration, NOT login
+# ============================================================================
+
+from fastapi import Request as FastAPIRequest
+
+@auth_router.post("/login")
+async def unified_login(request: FastAPIRequest):
+    """
+    Unified login endpoint for all roles.
+    
+    Request body:
+    {
+        "role": "farmer" | "buyer" | "admin",
+        "email": "user@example.com",   // optional
+        "phone": "9876543210",          // optional
+        "password": "password123"
+    }
+    
+    - Farmer: login with email OR phone
+    - Buyer: login with phone OR email; if email matches an admin, auto-elevates
+    - Admin: login with email
+    """
+    try:
+        data = await request.json()
+        role = data.get('role', 'farmer')
+        password = data.get('password', '')
+        
+        from fastapi.responses import JSONResponse
+        
+        if not password:
+            return JSONResponse(content={'error': 'Password required'}, status_code=400)
+        
+        user = None
+        
+        if role == 'farmer':
+            # Farmer: accept email OR phone
+            email = (data.get('email', '') or '').strip()
+            phone = (data.get('phone', '') or '').strip()
+            if email:
+                user = BaseModel.execute_query(
+                    "SELECT * FROM farmers WHERE LOWER(email) = LOWER(%s)", (email,), fetch_one=True
+                )
+            if not user and phone:
+                user = BaseModel.execute_query(
+                    "SELECT * FROM farmers WHERE phone = %s", (phone,), fetch_one=True
+                )
+            if not user:
+                return JSONResponse(
+                    content={'error': 'No farmer account found. Please register first.'}, 
+                    status_code=401
+                )
+                
+        elif role == 'buyer':
+            # Buyer: accept phone OR email
+            phone_or_email = (data.get('phone', '') or data.get('email', '') or '').strip()
+            if not phone_or_email:
+                return JSONResponse(
+                    content={'error': 'Phone or Email required for buyer login'}, 
+                    status_code=400
+                )
+            
+            if '@' in phone_or_email:
+                # Looks like email — check buyers table first
+                user = BaseModel.execute_query(
+                    "SELECT * FROM buyers WHERE LOWER(email) = LOWER(%s)", (phone_or_email,), fetch_one=True
+                )
+                if not user:
+                    # Not a buyer email — check if it's an admin (admin logging in via Buyer tab)
+                    admin_user = BaseModel.execute_query(
+                        "SELECT *, admin_id as id FROM admins WHERE LOWER(email) = LOWER(%s)", 
+                        (phone_or_email,), fetch_one=True
+                    )
+                    if admin_user:
+                        user = admin_user
+                        role = 'admin'  # Elevate to admin
+            else:
+                # Looks like phone — query buyers by phone
+                user = BaseModel.execute_query(
+                    "SELECT * FROM buyers WHERE phone = %s", (phone_or_email,), fetch_one=True
+                )
+            
+            if not user:
+                return JSONResponse(
+                    content={'error': 'No account found with this phone or email. Please register first.'}, 
+                    status_code=401
+                )
+                
+        elif role == 'admin':
+            email = (data.get('email', '') or '').strip()
+            if not email:
+                return JSONResponse(
+                    content={'error': 'Email required for admin login'}, 
+                    status_code=400
+                )
+            user = BaseModel.execute_query(
+                "SELECT *, admin_id as id FROM admins WHERE LOWER(email) = LOWER(%s)", 
+                (email,), fetch_one=True
+            )
+            if not user:
+                return JSONResponse(
+                    content={'error': 'No admin account found with this email.'}, 
+                    status_code=401
+                )
+        else:
+            return JSONResponse(content={'error': 'Invalid role'}, status_code=400)
+        
+        # Verify password
+        if not check_password_hash(user.get('password_hash', ''), password):
+            return JSONResponse(
+                content={'error': 'Incorrect password. Please try again.'}, 
+                status_code=401
+            )
+        
+        # Build response — direct login (no OTP)
+        user_id = user.get('id') or user.get('admin_id')
+        user_email = user.get('email', '')
+        first_name = user.get('first_name', '') or user.get('name', '')
+        last_name = user.get('last_name', '')
+        name = f"{first_name} {last_name}".strip()
+        
+        identity = str(user_id)
+        access_token = create_access_token(
+            identity=identity, 
+            additional_claims={'role': role, 'user_id': user_id, 'type': role}
+        )
+        
+        # Create a simple refresh token (reuse access token logic with longer expiry)
+        refresh_token = create_access_token(
+            identity=identity,
+            additional_claims={'type': 'refresh'}
+        )
+        
+        return {
+            'message': 'Login successful',
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'user': {
+                'id': user_id,
+                'name': name,
+                'first_name': first_name,
+                'last_name': last_name,
+                'email': user_email,
+                'phone': user.get('phone', ''),
+                'role': role,
+                'location': user.get('location', '')
+            }
+        }
+        
+    except Exception as e:
+        print(f"[AUTH] Login error: {e}")
+        import traceback
+        traceback.print_exc()
+        from fastapi.responses import JSONResponse
+        error_str = str(e).lower()
+        if 'connection' in error_str or 'timeout' in error_str or 'database' in error_str:
+            return JSONResponse(
+                content={'error': 'Server is warming up. Please try again in a moment.'},
+                status_code=503
+            )
+        return JSONResponse(
+            content={'error': 'Login failed. Please try again.'},
+            status_code=500
+        )
+
 # ============================================================================
 # SCHEMAS
 # ============================================================================

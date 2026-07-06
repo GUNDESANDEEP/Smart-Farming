@@ -75,7 +75,9 @@ const LoginPage = () => {
     try {
       let response;
       if (userType === 'farmer') {
-        response = await authAPI.farmerLogin(formData.email, formData.password);
+        // Farmer can login with email or phone — send both, backend detects
+        const input = (formData.email || '').trim();
+        response = await authAPI.farmerLogin(input, formData.password);
       } else if (userType === 'buyer') {
         // Send input to buyerLogin — backend handles email vs phone detection
         // If the email belongs to an admin, backend auto-detects and logs in as admin
@@ -275,11 +277,15 @@ const LoginPage = () => {
               </div>
             ) : (
               <div className="glass-input">
-                <FiMail className="input-icon" />
+                {formData.email && /^\d/.test(formData.email) ? (
+                  <FiPhone className="input-icon" />
+                ) : (
+                  <FiMail className="input-icon" />
+                )}
                 <input
-                  type="email"
+                  type="text"
                   name="email"
-                  placeholder="Email ID"
+                  placeholder="Email or Phone Number"
                   value={formData.email}
                   onChange={handleChange}
                   required

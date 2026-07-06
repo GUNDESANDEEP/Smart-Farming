@@ -365,7 +365,13 @@ export const getErrorMessage = (error) => {
 export const authAPI = {
   register: (data) => apiClient.post('/auth/register', data),
   login: (data) => apiClient.post('/auth/login', data),
-  farmerLogin: (email, password) => apiClient.post('/auth/login', { email, password, role: 'farmer' }),
+  // farmerLogin: sends both phone and email so backend can handle email OR phone input
+  farmerLogin: (emailOrPhone, password) => apiClient.post('/auth/login', {
+    email: emailOrPhone,   // backend checks this for emails
+    phone: emailOrPhone,   // backend checks this for phone numbers
+    password,
+    role: 'farmer'
+  }),
   // buyerLogin: sends both phone and email so backend can handle email OR phone input
   buyerLogin: (phoneOrEmail, password) => apiClient.post('/auth/login', {
     phone: phoneOrEmail,   // backend checks this for phone numbers
