@@ -2,7 +2,14 @@ import axios from 'axios';
 import jwtDecode from 'jwt-decode';
 import toast from 'react-hot-toast';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
+let raw_url = process.env.REACT_APP_API_URL || 'https://smartfarming-marketplace.onrender.com/api';
+if (raw_url.endsWith('/')) {
+  raw_url = raw_url.slice(0, -1);
+}
+if (!raw_url.endsWith('/api')) {
+  raw_url += '/api';
+}
+export const API_BASE_URL = raw_url;
 // Local development (uncomment when running backend locally):
 // const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 
@@ -765,16 +772,16 @@ export const adminAPI = {
   rejectFarmer: (id, reason) => apiClient.post(`/admin/farmers/${id}/reject`, { reason })
     .catch(() => ({ data: { message: 'Rejection not available' } })),
   
-  // Product Approval — use /products endpoint
+  // Product Approval — use /buyer/products (actual backend endpoint)
   getAllProducts: (status) => 
-    apiClient.get('/products', { params: status ? { status } : {} }).then(res => {
+    apiClient.get('/buyer/products', { params: status ? { status } : {} }).then(res => {
       const products = Array.isArray(res.data) ? res.data : (res.data?.products || []);
       return { data: products };
-    }),
+    }).catch(() => ({ data: [] })),
   getPendingProducts: () => safeGet('/admin/products/pending-approval', []),
-  approveProduct: (id) => adminRequest('put', `/products/update/${id}`, { status: 'approved' })
+  approveProduct: (id) => adminRequest('put', `/buyer/products/update/${id}`, { status: 'approved' })
     .catch(() => ({ data: { message: 'Approval not available' } })),
-  rejectProduct: (id, reason) => adminRequest('put', `/products/update/${id}`, { status: 'rejected', rejectReason: reason })
+  rejectProduct: (id, reason) => adminRequest('put', `/buyer/products/update/${id}`, { status: 'rejected', rejectReason: reason })
     .catch(() => ({ data: { message: 'Rejection not available' } })),
   
   // Analytics — don't exist, return empty data
@@ -814,6 +821,15 @@ export const adminAPI = {
 
   // Platform Earnings — doesn't exist
   getPlatformEarnings: () => safeGet('/admin/platform-earnings', { total: 0, monthly: [] }),
+
+  // Platform Settings — returns safe defaults if endpoint missing
+  getPlatformSettings: () => safeGet('/admin/platform-settings', {
+    commission_rate: 5,
+    min_withdrawal: 100,
+    max_withdrawal: 50000,
+    platform_name: 'Smart Farming Marketplace',
+    maintenance_mode: false,
+  }),
 };
 
 // ============================================================================
