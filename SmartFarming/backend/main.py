@@ -299,8 +299,25 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ============================================================================
 routers_registered = []
 
+# Admin Auth Router (FastAPI)
 try:
-    from routes.auth import auth_router
+    from routes.admin_auth_fastapi import admin_auth_router
+    app.include_router(admin_auth_router)
+    routers_registered.append("admin_auth_router -> /api/admin-auth")
+except Exception as e:
+    print(f"[ERR] admin_auth: {e}")
+
+# Buyer Auth Router (FastAPI)
+try:
+    from routes.buyer_auth_fastapi import buyer_auth_router
+    app.include_router(buyer_auth_router)
+    routers_registered.append("buyer_auth_router -> /api/buyer-auth")
+except Exception as e:
+    print(f"[ERR] buyer_auth: {e}")
+
+# Auth Router (FastAPI) - Farmer login, signup, etc.
+try:
+    from routes.auth_fastapi import auth_router
     app.include_router(auth_router)
     routers_registered.append("auth_router -> /api/auth")
 except Exception as e:
