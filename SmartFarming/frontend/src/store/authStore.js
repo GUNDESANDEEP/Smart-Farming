@@ -57,6 +57,22 @@ export const useAuthStore = create((set, get) => ({
   
   clearError: () => set({ error: null }),
 
+  // Called by LoginPage after a successful API login to set auth state
+  login: (user, token, refreshToken) => {
+    tokenUtils.setTokens(token, refreshToken);
+    localStorage.setItem('user', JSON.stringify(user));
+    set({
+      user,
+      token,
+      refreshToken,
+      isAuthenticated: true,
+      role: user?.role || null,
+      authLoading: false,
+      loading: false,
+      error: null
+    });
+  },
+
   register: async (email, password, firstName, lastName, phone, role) => {
     set({ loading: true, error: null });
     try {
