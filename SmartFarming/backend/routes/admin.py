@@ -1347,19 +1347,23 @@ async def fa_receipts(request: FastAPIRequest):
         try:
             # Try receipts table first (has direct buyer_name, farmer info)
             receipts = BaseModel.execute_query(
-                """SELECT r.id as receipt_id, r.receipt_id as receipt_code,
-                          COALESCE(r.grand_total, r.subtotal, 0) as amount,
-                          r.payment_type as payment_method, r.payment_status,
-                          r.created_at, r.quantity_kg,
-                          r.buyer_name,
+                """SELECT r.id, r.receipt_id,
+                          COALESCE(r.grand_total, r.subtotal, 0) as grand_total,
+                          r.payment_type, r.payment_status,
+                          r.created_at,
+                          COALESCE(r.buyer_name, CONCAT(b.first_name, ' ', COALESCE(b.last_name, '')), 'N/A') as buyer_name,
                           COALESCE(CONCAT(f.first_name, ' ', COALESCE(f.last_name, '')), 'N/A') as farmer_name,
                           COALESCE(
-                            (SELECT name FROM products WHERE id = (SELECT product_id FROM receipt_items ri WHERE ri.receipt_id = r.id LIMIT 1)),
                             (SELECT product_name FROM receipt_items ri WHERE ri.receipt_id = r.id LIMIT 1),
                             'N/A'
-                          ) as product_name
+                          ) as product_name,
+                          COALESCE(
+                            (SELECT SUM(quantity_kg) FROM receipt_items ri WHERE ri.receipt_id = r.id),
+                            0
+                          ) as quantity_kg
                    FROM receipts r
                    LEFT JOIN farmers f ON r.farmer_id = f.id
+                   LEFT JOIN buyers b ON r.buyer_id = b.id
                    ORDER BY r.created_at DESC LIMIT 50""",
                 fetch_all=True) or []
         except Exception as e1:
@@ -1367,7 +1371,7 @@ async def fa_receipts(request: FastAPIRequest):
             # Fallback: try payments table
             try:
                 receipts = BaseModel.execute_query(
-                    """SELECT p.id as receipt_id, p.amount, p.payment_method,
+                    """SELECT p.id as id, p.amount as grand_total, p.payment_method as payment_type,
                               p.status as payment_status, p.created_at
                        FROM payments p
                        ORDER BY p.created_at DESC LIMIT 50""",
