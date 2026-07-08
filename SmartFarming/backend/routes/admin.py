@@ -1377,6 +1377,7 @@ async def fa_receipts(request: FastAPIRequest):
                        ORDER BY p.created_at DESC LIMIT 50""",
                     fetch_all=True) or []
             except: receipts = []
+            return _ajson({'receipts': _serialize(receipts), 'total': len(receipts), 'debug_error': str(e1)})
         return _ajson({'receipts': _serialize(receipts), 'total': len(receipts)})
     except Exception as e:
         return _ajson({'error': str(e)}, 500)
