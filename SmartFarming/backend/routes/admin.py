@@ -1121,17 +1121,108 @@ async def fa_delete_user(target_user_id: str, request: FastAPIRequest):
         if role == 'farmer' or not role:
             r = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (target_user_id,), fetch_one=True)
             if r:
-                for tbl in ['products', 'orders', 'wallet']:
-                    try: BaseModel.execute_query(f"DELETE FROM {tbl} WHERE farmer_id = %s", (target_user_id,))
-                    except: pass
+                # 1. Delete order tracking, disputes, return requests for orders of the farmer
+                try:
+                    BaseModel.execute_query(
+                        "DELETE FROM order_tracking WHERE order_id IN (SELECT id FROM orders WHERE farmer_id = %s)",
+                        (target_user_id,)
+                    )
+                    BaseModel.execute_query(
+                        "DELETE FROM disputes WHERE order_id IN (SELECT id FROM orders WHERE farmer_id = %s)",
+                        (target_user_id,)
+                    )
+                    BaseModel.execute_query(
+                        "DELETE FROM return_requests WHERE order_id IN (SELECT id FROM orders WHERE farmer_id = %s)",
+                        (target_user_id,)
+                    )
+                except Exception as e:
+                    print(f"Error deleting farmer order dependents: {e}")
+
+                # 2. Delete buyer reviews, platform earnings, payment otps, receipts (and items)
+                try:
+                    BaseModel.execute_query(
+                        "DELETE FROM receipt_items WHERE receipt_id IN (SELECT id FROM receipts WHERE farmer_id = %s)",
+                        (target_user_id,)
+                    )
+                    BaseModel.execute_query("DELETE FROM receipts WHERE farmer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM buyer_reviews WHERE farmer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM platform_earnings WHERE farmer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM payment_otps WHERE farmer_id = %s", (target_user_id,))
+                except Exception as e:
+                    print(f"Error deleting farmer platform dependents: {e}")
+
+                # 3. Delete payments associated with farmer orders
+                try:
+                    BaseModel.execute_query(
+                        "DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE farmer_id = %s)",
+                        (target_user_id,)
+                    )
+                except Exception as e:
+                    print(f"Error deleting farmer payments: {e}")
+
+                # 4. Delete orders, products, wallet
+                try:
+                    BaseModel.execute_query("DELETE FROM orders WHERE farmer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM products WHERE farmer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM wallet WHERE farmer_id = %s", (target_user_id,))
+                except Exception as e:
+                    print(f"Error deleting farmer products/orders/wallet: {e}")
+
+                # 5. Delete the farmer itself
                 BaseModel.execute_query("DELETE FROM farmers WHERE id = %s", (target_user_id,))
                 deleted = True
         if not deleted and (role == 'buyer' or not role):
             r = BaseModel.execute_query("SELECT id FROM buyers WHERE id = %s", (target_user_id,), fetch_one=True)
             if r:
-                for tbl in ['orders', 'cart']:
-                    try: BaseModel.execute_query(f"DELETE FROM {tbl} WHERE buyer_id = %s", (target_user_id,))
-                    except: pass
+                # 1. Delete order tracking, disputes, return requests for orders of the buyer
+                try:
+                    BaseModel.execute_query(
+                        "DELETE FROM order_tracking WHERE order_id IN (SELECT id FROM orders WHERE buyer_id = %s)",
+                        (target_user_id,)
+                    )
+                    BaseModel.execute_query(
+                        "DELETE FROM disputes WHERE order_id IN (SELECT id FROM orders WHERE buyer_id = %s)",
+                        (target_user_id,)
+                    )
+                    BaseModel.execute_query(
+                        "DELETE FROM return_requests WHERE order_id IN (SELECT id FROM orders WHERE buyer_id = %s)",
+                        (target_user_id,)
+                    )
+                except Exception as e:
+                    print(f"Error deleting buyer order dependents: {e}")
+
+                # 2. Delete buyer reviews, platform earnings, payment otps, receipts (and items), buyer addresses, return requests directly, cart
+                try:
+                    BaseModel.execute_query(
+                        "DELETE FROM receipt_items WHERE receipt_id IN (SELECT id FROM receipts WHERE buyer_id = %s)",
+                        (target_user_id,)
+                    )
+                    BaseModel.execute_query("DELETE FROM receipts WHERE buyer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM buyer_reviews WHERE buyer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM platform_earnings WHERE buyer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM payment_otps WHERE buyer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM buyer_addresses WHERE buyer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM return_requests WHERE buyer_id = %s", (target_user_id,))
+                    BaseModel.execute_query("DELETE FROM cart WHERE buyer_id = %s", (target_user_id,))
+                except Exception as e:
+                    print(f"Error deleting buyer platform dependents: {e}")
+
+                # 3. Delete payments associated with buyer orders
+                try:
+                    BaseModel.execute_query(
+                        "DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE buyer_id = %s) OR buyer_id = %s",
+                        (target_user_id, target_user_id)
+                    )
+                except Exception as e:
+                    print(f"Error deleting buyer payments: {e}")
+
+                # 4. Delete orders
+                try:
+                    BaseModel.execute_query("DELETE FROM orders WHERE buyer_id = %s", (target_user_id,))
+                except Exception as e:
+                    print(f"Error deleting buyer orders: {e}")
+
+                # 5. Delete the buyer itself
                 BaseModel.execute_query("DELETE FROM buyers WHERE id = %s", (target_user_id,))
                 deleted = True
         if not deleted:
