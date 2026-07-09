@@ -24,6 +24,24 @@ async def get_weather(
     """Get weather for a city or coordinates"""
     try:
         search_city = location or city or 'Hyderabad'
+        
+        # Normalize common short location names/abbreviations to full names for OpenWeatherMap API
+        search_city_clean = search_city.strip().lower()
+        normalization_map = {
+            'hnk': 'Hanamkonda',
+            'wgl': 'Warangal',
+            'hyd': 'Hyderabad',
+            'nzb': 'Nizamabad',
+            'krmr': 'Karimnagar',
+            'blr': 'Bangalore',
+            'gtr': 'Guntur',
+            'che': 'Chennai',
+            'del': 'Delhi',
+            'bom': 'Mumbai',
+        }
+        if search_city_clean in normalization_map:
+            search_city = normalization_map[search_city_clean]
+
         if lat and lon:
             url = f'https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric'
         else:
