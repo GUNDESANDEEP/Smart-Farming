@@ -18,14 +18,16 @@ async def get_weather(
     lat: str = Query(None),
     lon: str = Query(None),
     city: str = Query('Hyderabad'),
+    location: str = Query(None),
     user_id: str = Depends(get_current_user)
 ):
     """Get weather for a city or coordinates"""
     try:
+        search_city = location or city or 'Hyderabad'
         if lat and lon:
             url = f'https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric'
         else:
-            url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric'
+            url = f'https://api.openweathermap.org/data/2.5/weather?q={search_city}&appid={WEATHER_API_KEY}&units=metric'
         resp = http_requests.get(url, timeout=10)
         data = resp.json()
         

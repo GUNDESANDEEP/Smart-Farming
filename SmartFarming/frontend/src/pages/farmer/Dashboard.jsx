@@ -4,6 +4,7 @@ import { useAuthStore } from '../../store/authStore';
 import { farmerAPI, weatherAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import SellerLayout from './SellerLayout';
+import PremiumWeatherWidget from '../../components/PremiumWeatherWidget';
 
 // Cache key for localStorage
 const CACHE_KEY = 'sf_farmer_dashboard';
@@ -277,37 +278,7 @@ export default function FarmerDashboard() {
       {/* Weather + Activity Feed + Revenue */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 20 }}>
         {/* Weather */}
-        <div className="seller-card">
-          <div className="seller-card-header">
-            <h3>🌤️ Weather</h3>
-          </div>
-          <div className="seller-card-body" style={{ textAlign: 'center' }}>
-            {weather ? (
-              <>
-                <div style={{ fontSize: '2.5rem', marginBottom: 8 }}>
-                  {weather.current?.condition?.icon || weather.icon ? (
-                    <img src={weather.current?.condition?.icon || weather.icon} alt="weather" style={{ width: 48, height: 48 }} />
-                  ) : '🌤️'}
-                </div>
-                <h3 style={{ margin: 0, color: '#14532d', fontSize: '1.8rem' }}>
-                  {weather.current?.temp_c || weather.temperature || '--'}°C
-                </h3>
-                <p style={{ color: '#6b7280', fontSize: '0.82rem', margin: '4px 0' }}>
-                  {weather.current?.condition?.text || weather.description || 'Partly Cloudy'}
-                </p>
-                <p style={{ color: '#9ca3af', fontSize: '0.72rem' }}>
-                  💧 {weather.current?.humidity || weather.humidity || '--'}% humidity
-                </p>
-              </>
-            ) : (
-              <div style={{ padding: 20 }}>
-                <p style={{ fontSize: '2rem', marginBottom: 8 }}>🌤️</p>
-                <p style={{ color: '#6b7280', fontSize: '0.85rem' }}>28°C · Partly Cloudy</p>
-                <p style={{ color: '#9ca3af', fontSize: '0.72rem' }}>💧 65% humidity · 🌬️ 12 km/h</p>
-              </div>
-            )}
-          </div>
-        </div>
+        <PremiumWeatherWidget defaultLocation={user?.location || 'Hyderabad'} />
 
         {/* Activity Feed */}
         <div className="seller-card">
