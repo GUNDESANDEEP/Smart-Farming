@@ -143,6 +143,7 @@ const SaasDashboard = () => {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(30);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -169,6 +170,32 @@ const SaasDashboard = () => {
   }, [period]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Auto-refresh polling every 15 seconds
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = setInterval(() => {
+      // Quietly reload data without setting loading=true to prevent flash
+      const fetchQuietly = async () => {
+        try {
+          const [analyticsRes, productsRes, breakdownRes, monthlyRes] = await Promise.allSettled([
+            adminAPI.getSaasAnalytics(period),
+            adminAPI.getTopProducts(period, 8),
+            adminAPI.getRevenueBreakdown(period),
+            adminAPI.getMonthlySales(6),
+          ]);
+          if (analyticsRes.status === 'fulfilled') setAnalytics(analyticsRes.value.data.analytics);
+          if (productsRes.status === 'fulfilled') setTopProducts(productsRes.value.data.products || []);
+          if (breakdownRes.status === 'fulfilled') setBreakdown(breakdownRes.value.data.breakdown || []);
+          if (monthlyRes.status === 'fulfilled') setMonthlySales(monthlyRes.value.data.monthly_data || []);
+        } catch (err) {
+          console.error('SaaS Dashboard auto-refresh error:', err);
+        }
+      };
+      fetchQuietly();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, period]);
 
   const formatCurrency = (val) => {
     const num = Number(val) || 0;
@@ -205,21 +232,59 @@ const SaasDashboard = () => {
             Platform analytics & performance overview
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '6px', background: 'rgba(255,255,255,0.9)', borderRadius: '10px', padding: '4px', border: '1px solid #e2e8f0' }}>
-          {[7, 30, 90].map(d => (
-            <button
-              key={d}
-              onClick={() => setPeriod(d)}
-              style={{
-                padding: '6px 14px', borderRadius: '8px', border: 'none', cursor: 'pointer',
-                fontSize: '0.8rem', fontWeight: 600, transition: 'all 0.2s',
-                background: period === d ? 'linear-gradient(135deg, #166534, #22c55e)' : 'transparent',
-                color: period === d ? '#fff' : '#64748b',
-              }}
-            >
-              {d}D
-            </button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Live toggle */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem', color: '#64748b', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              style={{ accentColor: '#22c55e', width: '14px', height: '14px', cursor: 'pointer' }}
+            />
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                backgroundColor: autoRefresh ? '#22c55e' : '#cbd5e1',
+                display: 'inline-block',
+                boxShadow: autoRefresh ? '0 0 8px #22c55e' : 'none',
+                animation: autoRefresh ? 'saas-blink 1.5s infinite' : 'none'
+              }}></span>
+              Live Updates
+            </span>
+          </label>
+
+          {/* Manual refresh button */}
+          <button
+            onClick={() => loadData()}
+            style={{
+              padding: '6px 12px', borderRadius: '8px', border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer',
+              fontSize: '0.78rem', fontWeight: 600, color: '#64748b', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.2s'
+            }}
+            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#f8fafc'}
+            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#fff'}
+          >
+            Refresh
+          </button>
+
+          {/* Period selector */}
+          <div style={{ display: 'flex', gap: '2px', background: 'rgba(255,255,255,0.9)', borderRadius: '10px', padding: '4px', border: '1px solid #e2e8f0' }}>
+            {[7, 30, 90].map(d => (
+              <button
+                key={d}
+                onClick={() => setPeriod(d)}
+                style={{
+                  padding: '6px 14px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                  fontSize: '0.8rem', fontWeight: 600, transition: 'all 0.2s',
+                  background: period === d ? 'linear-gradient(135deg, #166534, #22c55e)' : 'transparent',
+                  color: period === d ? '#fff' : '#64748b',
+                }}
+              >
+                {d}D
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -463,6 +528,10 @@ const SaasDashboard = () => {
         }
         @keyframes saas-spin {
           to { transform: rotate(360deg); }
+        }
+        @keyframes saas-blink {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 1; }
         }
         @media (max-width: 900px) {
           .dashboard-section > div[style*="grid-template-columns: 1fr 320px"] {
