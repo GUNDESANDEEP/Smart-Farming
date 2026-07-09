@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FiMapPin, FiChevronDown, FiWind, FiDroplet, FiSun, FiCloud, FiCloudRain, FiCloudLightning } from 'react-icons/fi';
+import { FiMapPin, FiChevronDown, FiWind, FiDroplet, FiSun, FiCloud, FiCloudRain, FiCloudLightning, FiRefreshCw } from 'react-icons/fi';
 import { weatherAPI } from '../services/api';
 
 const POPULAR_CITIES = [
@@ -229,6 +229,10 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
           0%, 100% { transform: scale(1); opacity: 0.8; }
           50% { transform: scale(1.15); opacity: 1; }
         }
+        @keyframes weather-spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
       `}} />
 
       {/* Header with City Dropdown */}
@@ -332,10 +336,35 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
           )}
         </div>
 
-        {/* Options Dot Menu */}
-        <div style={{ color: '#fff', opacity: 0.6, fontSize: '1.2rem', cursor: 'pointer', userSelect: 'none' }}>
-          •••
-        </div>
+        {/* Options Dot Menu replaced with dynamic Refresh button */}
+        <button
+          onClick={() => fetchWeather(city)}
+          disabled={loading}
+          title="Refresh weather data"
+          style={{
+            background: 'rgba(255, 255, 255, 0.12)',
+            border: 'none',
+            borderRadius: '50%',
+            width: '32px',
+            height: '32px',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            transition: 'all 0.2s',
+            backdropFilter: 'blur(8px)',
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.22)'}
+          onMouseLeave={e => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)'}
+        >
+          <FiRefreshCw
+            size={13}
+            style={{
+              animation: loading ? 'weather-spin 1s linear infinite' : 'none',
+            }}
+          />
+        </button>
       </div>
 
       {/* Main Temperature & Weather Info */}
@@ -407,9 +436,10 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
           </div>
         </div>
 
-        {/* Full Forecast Button */}
+        {/* Refresh Live Location Button */}
         <button
-          onClick={() => fetchWeather(city)}
+          onClick={() => detectLiveLocation()}
+          disabled={loading}
           style={{
             width: '100%',
             background: 'rgba(255,255,255,0.06)',
@@ -427,7 +457,7 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
           onMouseEnter={e => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)'}
           onMouseLeave={e => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'}
         >
-          See full forecast
+          {loading ? 'Updating Location...' : '📍 Refresh Live Location Weather'}
         </button>
       </div>
     </div>
