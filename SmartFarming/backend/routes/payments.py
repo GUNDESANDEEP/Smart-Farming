@@ -121,56 +121,12 @@ def _serialize_row(row):
 
 
 def _send_email(to_email, subject, body_html):
-    """Send email via SMTP - SMTP authentication is MANDATORY. Uses STARTTLS port 587.
-    Anti-spam: uses display name, Reply-To, and text/plain fallback."""
-    sender_email = os.getenv('EMAIL_SENDER')
-    sender_password = os.getenv('EMAIL_PASSWORD')
-    
-    if not sender_email or not sender_password:
-        raise RuntimeError(
-            "SMTP Authentication FAILED: EMAIL_SENDER and EMAIL_PASSWORD must be set in .env. "
-            "Email sending is mandatory and cannot be skipped."
-        )
-
+    """Send email via the shared EmailService (which uses Brevo HTTP API)."""
     try:
-        from email.utils import formataddr
-        import re
-        
-        msg = MIMEMultipart("alternative")
-        msg['From'] = formataddr(('SmartFarm', sender_email))
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg['Reply-To'] = sender_email
-        
-        # Add plain text fallback (reduces spam score)
-        plain_text = re.sub(r'<[^>]+>', '', body_html).strip()
-        plain_text = re.sub(r'\s+', ' ', plain_text)
-        msg.attach(MIMEText(plain_text, 'plain', 'utf-8'))
-        # HTML version
-        msg.attach(MIMEText(body_html, 'html', 'utf-8'))
-
-        smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', '587'))
-        
-        # Use SMTP + STARTTLS (port 587) - secure connection, best for cloud hosts
-        server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(sender_email, sender_password)
-        server.send_message(msg)
-        server.quit()
-        print(f"[OK] Email sent to {to_email} (STARTTLS port 587)")
-        return True
-    except smtplib.SMTPAuthenticationError as e:
-        error_msg = (
-            f"[ERROR] SMTP Authentication FAILED for {sender_email}. "
-            f"Check EMAIL_SENDER and EMAIL_PASSWORD in .env. Error: {e}"
-        )
-        print(error_msg)
-        raise RuntimeError(error_msg)
+        from utils.email_service import EmailService
+        return EmailService._send_email(to_email, subject, body_html)
     except Exception as e:
-        print(f"[ERROR] Email error (payments): {e}")
+        print(f"[ERROR] Email error via EmailService (payments): {e}")
         return False
 
 
