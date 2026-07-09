@@ -936,26 +936,15 @@ export const adminAPI = {
 // ============================================================================
 
 export const messagingAPI = {
-  getConversations: (page = 1, limit = 20) =>
-    safeGet('/messages/conversations', [], { page, limit }),
-  getConversation: (userId) =>
-    safeGet(`/messages/conversations/${userId}`, {}),
-  createConversation: (userId) =>
-    apiClient.post('/messages/conversations', { user_id: userId })
-      .catch(() => ({ data: { _id: Date.now().toString(), user_id: userId } })),
-  getMessages: (conversationId, page = 1, limit = 50) =>
-    safeGet(`/messages/conversations/${conversationId}/messages`, [], { page, limit }),
-  sendMessage: (conversationId, message) =>
-    apiClient.post(`/messages/conversations/${conversationId}/send`, { message })
-      .catch(() => ({ data: { _id: Date.now().toString(), message, sent: true } })),
-  deleteMessage: (messageId) =>
-    apiClient.delete(`/messages/messages/${messageId}`)
-      .catch(() => ({ data: { message: 'Delete not available' } })),
-  markAsRead: (messageId) =>
-    apiClient.post(`/messages/messages/${messageId}/read`)
-      .catch(() => ({ data: { message: 'Mark as read not available' } })),
-  getUnreadCount: (conversationId) =>
-    safeGet(`/messages/conversations/${conversationId}/unread-count`, { count: 0 }),
+  getConversations: (page = 1, limit = 50) => apiClient.get('/messages/conversations', { params: { page, limit } }),
+  getMessages: (otherUserId) => apiClient.get(`/messages/${otherUserId}`),
+  sendMessage: (receiverId, content) => apiClient.post('/messages/send', { receiver_id: receiverId, content }),
+  sendHeartbeat: () => apiClient.post('/messages/heartbeat'),
+  getConversation: (userId) => safeGet(`/messages/${userId}`, {}),
+  createConversation: (userId) => apiClient.post('/messages/send', { receiver_id: userId, content: 'Start conversation...' }),
+  deleteMessage: (messageId) => apiClient.delete(`/messages/messages/${messageId}`).catch(() => ({ data: { message: 'Delete not available' } })),
+  markAsRead: (messageId) => apiClient.post(`/messages/messages/${messageId}/read`).catch(() => ({ data: { message: 'Mark as read not available' } })),
+  getUnreadCount: (conversationId) => safeGet(`/messages/conversations/${conversationId}/unread-count`, { count: 0 }),
 };
 
 // ============================================================================
@@ -1086,16 +1075,6 @@ export const checkoutAPI = {
   
   // Admin
   getAdminDashboard: () => apiClient.get('/checkout/admin/dashboard'),
-};
-
-// ============================================================================
-// MESSAGING & CHAT APIs
-// ============================================================================
-export const messagingAPI = {
-  getConversations: (page = 1, limit = 50) => apiClient.get('/messages/conversations', { params: { page, limit } }),
-  getMessages: (otherUserId) => apiClient.get(`/messages/${otherUserId}`),
-  sendMessage: (receiverId, content) => apiClient.post('/messages/send', { receiver_id: receiverId, content }),
-  sendHeartbeat: () => apiClient.post('/messages/heartbeat'),
 };
 
 export default apiClient;
