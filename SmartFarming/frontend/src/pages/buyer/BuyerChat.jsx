@@ -26,12 +26,26 @@ export default function BuyerChat() {
   useEffect(() => { 
     fetchFarmers(); 
     fetchFarmersCount();
+
+    // Send heartbeat to indicate online status
+    const sendHeartbeat = async () => {
+      try {
+        await fetch(`${API}/messages/heartbeat`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${getToken()}` },
+        });
+      } catch {}
+    };
+    sendHeartbeat();
+    const heartbeatInterval = setInterval(sendHeartbeat, 30000);
+
     const listInterval = setInterval(() => {
       fetchFarmers();
       fetchFarmersCount();
     }, 3000);
     return () => {
       clearInterval(listInterval);
+      clearInterval(heartbeatInterval);
       clearInterval(pollRef.current);
     };
   }, []);

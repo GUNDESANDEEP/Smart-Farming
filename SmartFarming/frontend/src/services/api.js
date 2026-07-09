@@ -1088,4 +1088,14 @@ export const checkoutAPI = {
   getAdminDashboard: () => apiClient.get('/checkout/admin/dashboard'),
 };
 
+// ============================================================================
+// MESSAGING & CHAT APIs
+// ============================================================================
+export const messagingAPI = {
+  getConversations: (page = 1, limit = 50) => apiClient.get('/messages/conversations', { params: { page, limit } }),
+  getMessages: (otherUserId) => apiClient.get(`/messages/${otherUserId}`),
+  sendMessage: (receiverId, content) => apiClient.post('/messages/send', { receiver_id: receiverId, content }),
+  sendHeartbeat: () => apiClient.post('/messages/heartbeat'),
+};
+
 export default apiClient;

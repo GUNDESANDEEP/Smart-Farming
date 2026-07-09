@@ -401,7 +401,7 @@ except Exception as e:
     print(f"[ERR] admin: {e}")
 
 try:
-    from routes.messages import messages_router
+    from routes.messages_fastapi import messages_router
     app.include_router(messages_router)
     routers_registered.append("messages_router -> /api/messages")
 except Exception as e:

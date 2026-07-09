@@ -178,9 +178,11 @@ export default function FarmerMessages() {
   useEffect(() => {
     // Clean expired messages on mount
     cleanExpiredMessages();
-    // Track farmer activity
-    if (user?.id) updateUserActivity(user.id);
-    const activityInterval = setInterval(() => { if (user?.id) updateUserActivity(user.id); }, 30000);
+    // Send heartbeat to indicate online status
+    messagingAPI.sendHeartbeat().catch(() => {});
+    const activityInterval = setInterval(() => {
+      messagingAPI.sendHeartbeat().catch(() => {});
+    }, 30000);
 
     fetchConversations();
     loadAdminNotifications();
@@ -188,7 +190,6 @@ export default function FarmerMessages() {
     // ★ Fast polling (1.5s) for live feel
     const msgInterval = setInterval(() => {
       pollMessages();
-      // Also refresh conversation list to pick up new incoming chats
       fetchConversations();
     }, 1500);
 
@@ -230,13 +231,28 @@ export default function FarmerMessages() {
   const fetchConversations = async () => {
     if (isFetchingConvsRef.current) return;
     isFetchingConvsRef.current = true;
-    // First try API for real conversations
     try {
       const res = await messagingAPI.getConversations(1, 50);
       const data = res.data;
       const convs = data.conversations || data.data || [];
-      if (convs.length > 0) { setConversations(convs); return; }
-    } catch { /* fallback below */ } finally {
+      
+      // If the conversations are empty and no chats exist, we'll format it with empty placeholder
+      if (convs.length === 0) {
+        convs.push({
+          id: 'no_chats_yet',
+          other_user: { name: 'No chats yet', id: '' },
+          last_message: 'Buyers will appear here when they message you',
+          updated_at: new Date().toISOString(),
+          unread_count: 0,
+          isEmpty: true,
+        });
+      }
+      
+      setConversations(convs);
+      return;
+    } catch (err) {
+      console.error('Fetch conversations error:', err);
+    } finally {
       isFetchingConvsRef.current = false;
     }
 
@@ -345,18 +361,15 @@ export default function FarmerMessages() {
   const fetchMessages = async (convId) => {
     if (isFetchingMsgsRef.current) return;
     isFetchingMsgsRef.current = true;
-    // Try API first
     try {
-      const res = await messagingAPI.getMessages(convId, 1, 100);
+      const res = await messagingAPI.getMessages(convId);
       const data = res.data;
       const apiMsgs = data.messages || data.data || [];
-      if (apiMsgs.length > 0) {
-        // Reverse array since backend returns DESC order
-        const sorted = [...apiMsgs].reverse();
-        setMessages(sorted);
-        return;
-      }
-    } catch { /* fallback below */ } finally {
+      setMessages(apiMsgs);
+      return;
+    } catch (err) {
+      console.error('Fetch messages error:', err);
+    } finally {
       isFetchingMsgsRef.current = false;
     }
 
@@ -377,28 +390,29 @@ export default function FarmerMessages() {
   const handleSend = async () => {
     if (!newMessage.trim() || !selectedConv) return;
     setSending(true);
-    const msg = {
-      id: `farmer_msg_${Date.now()}`,
-      content: newMessage,
-      sender_id: user?.id,
-      sender_role: 'farmer',
-      sender_name: user?.name || 'Farmer',
-      created_at: new Date().toISOString(),
-      conv_id: selectedConv.id,
-    };
-
-    // Save to localStorage for cross-role sync
-    saveSharedMessage(msg);
-
-    // Also try API
-    try { await messagingAPI.sendMessage(selectedConv.id, newMessage); } catch { /* silent */ }
-
-    setMessages(prev => [...prev, msg]);
-    setNewMessage('');
-
-    // Update conversation preview
-    setConversations(prev => prev.map(c => c.id === selectedConv.id ? { ...c, last_message: newMessage, updated_at: new Date().toISOString() } : c));
-    setSending(false);
+    try {
+      await messagingAPI.sendMessage(selectedConv.id, newMessage);
+      setNewMessage('');
+      fetchMessages(selectedConv.id);
+      fetchConversations();
+    } catch (err) {
+      console.error('Send message error:', err);
+      const msg = {
+        id: `farmer_msg_${Date.now()}`,
+        content: newMessage,
+        sender_id: user?.id,
+        sender_role: 'farmer',
+        sender_name: user?.name || 'Farmer',
+        created_at: new Date().toISOString(),
+        conv_id: selectedConv.id,
+      };
+      saveSharedMessage(msg);
+      setMessages(prev => [...prev, msg]);
+      setNewMessage('');
+      setConversations(prev => prev.map(c => c.id === selectedConv.id ? { ...c, last_message: newMessage, updated_at: new Date().toISOString() } : c));
+    } finally {
+      setSending(false);
+    }
   };
 
   const getInitials = (name) => (name || 'U').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
