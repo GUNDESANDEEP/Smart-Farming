@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { FiMenu, FiX, FiLogOut, FiArrowLeft } from 'react-icons/fi';
 import useAuthStore from '../services/authStore';
+import { API_BASE_URL } from '../services/api';
 import '../styles/navigation.css';
 
 const Navigation = () => {
@@ -18,7 +19,7 @@ const Navigation = () => {
   const hiddenPaths = ['/', '/login', '/register'];
   const showBack = !hiddenPaths.includes(location.pathname);
 
-  const API = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+  const API = API_BASE_URL;
 
   const loadNotifs = async () => {
     if (!user) return;
