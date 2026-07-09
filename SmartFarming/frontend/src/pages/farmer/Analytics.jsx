@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
-import { farmerAPI } from '../../services/api';
+import { farmerAPI, checkoutAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import SellerLayout from './SellerLayout';
 
@@ -21,19 +21,39 @@ export default function FarmerAnalytics() {
     try {
       const [pRes, oRes, eRes] = await Promise.all([
         farmerAPI.getProducts(1, 100),
-        farmerAPI.getOrders(1, 500),
+        checkoutAPI.getFarmerOrders(),
         farmerAPI.getEarnings(),
       ]);
       const pData = pRes.data; setProducts(Array.isArray(pData) ? pData : (pData.products || pData.data || []));
       const orderList = oRes.data.orders || oRes.data.data || [];
-      setOrders(Array.isArray(orderList) ? orderList : []);
-      setEarnings({ total: eRes.data.total || 0, thisMonth: eRes.data.thisMonth || 0, pending: eRes.data.pending || 0 });
+      const ordersArr = Array.isArray(orderList) ? orderList : [];
+      setOrders(ordersArr);
+
+      const delivered = ordersArr.filter(o => o.order_status === 'DELIVERED');
+      const totalRev = delivered.reduce((s, o) => s + parseFloat(o.subtotal || o.total || 0), 0);
+
+      // Monthly sales calculations
+      const currentMonth = new Date().getMonth();
+      const currentYear = new Date().getFullYear();
+      const thisMonthEarnings = delivered
+        .filter(o => {
+          if (!o.created_at) return false;
+          const d = new Date(o.created_at);
+          return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+        })
+        .reduce((sum, o) => sum + parseFloat(o.subtotal || o.total || 0), 0);
+
+      setEarnings({
+        total: totalRev,
+        thisMonth: thisMonthEarnings,
+        pending: ordersArr.filter(o => ['PLACED', 'CONFIRMED', 'ACCEPTED', 'PACKED', 'OUT_FOR_DELIVERY'].includes(o.order_status)).reduce((s, o) => s + parseFloat(o.subtotal || o.total || 0), 0)
+      });
     } catch { /* silent - page shows empty state */ }
   };
 
   // Computed analytics
-  const deliveredOrders = orders.filter(o => o.status === 'delivered');
-  const totalRevenue = deliveredOrders.reduce((s, o) => s + parseFloat(o.total_price || o.total || 0), 0);
+  const deliveredOrders = orders.filter(o => o.order_status === 'DELIVERED');
+  const totalRevenue = deliveredOrders.reduce((s, o) => s + parseFloat(o.subtotal || o.total || 0), 0);
   const avgOrderValue = deliveredOrders.length > 0 ? totalRevenue / deliveredOrders.length : 0;
 
   // Monthly sales data (last 6 months)
@@ -46,7 +66,7 @@ export default function FarmerAnalytics() {
       const od = new Date(o.created_at);
       return od.getMonth() === d.getMonth() && od.getFullYear() === d.getFullYear();
     });
-    const revenue = monthOrders.reduce((s, o) => s + parseFloat(o.total_price || o.total || 0), 0);
+    const revenue = monthOrders.reduce((s, o) => s + parseFloat(o.subtotal || o.total || 0), 0);
     monthlyData.push({ month, orders: monthOrders.length, revenue });
   }
   const maxRevenue = Math.max(...monthlyData.map(m => m.revenue), 1);
@@ -54,7 +74,7 @@ export default function FarmerAnalytics() {
   // Product performance
   const productPerformance = products.map(p => {
     const pOrders = orders.filter(o => o.product_name === p.name);
-    const pRevenue = pOrders.filter(o => o.status === 'delivered').reduce((s, o) => s + parseFloat(o.total_price || o.total || 0), 0);
+    const pRevenue = pOrders.filter(o => o.order_status === 'DELIVERED').reduce((s, o) => s + parseFloat(o.subtotal || o.total || 0), 0);
     return { ...p, orderCount: pOrders.length, revenue: pRevenue };
   }).sort((a, b) => b.revenue - a.revenue);
 
@@ -64,7 +84,7 @@ export default function FarmerAnalytics() {
     const key = o.buyer_name || o.buyer_phone || 'Unknown';
     if (!customerMap[key]) customerMap[key] = { name: `${o.buyer_name || ''} ${o.buyer_last_name || ''}`.trim() || 'Unknown', orders: 0, spent: 0, city: o.buyer_city || '' };
     customerMap[key].orders++;
-    if (o.status === 'delivered') customerMap[key].spent += parseFloat(o.total_price || o.total || 0);
+    if (o.order_status === 'DELIVERED') customerMap[key].spent += parseFloat(o.subtotal || o.total || 0);
   });
   const topCustomers = Object.values(customerMap).sort((a, b) => b.spent - a.spent).slice(0, 10);
 
@@ -75,10 +95,10 @@ export default function FarmerAnalytics() {
     if (!categoryMap[cat]) categoryMap[cat] = { count: 0, revenue: 0 };
     categoryMap[cat].count++;
   });
-  orders.filter(o => o.status === 'delivered').forEach(o => {
+  orders.filter(o => o.order_status === 'DELIVERED').forEach(o => {
     const prod = products.find(p => p.name === o.product_name);
     const cat = prod?.category || 'Others';
-    if (categoryMap[cat]) categoryMap[cat].revenue += parseFloat(o.total_price || o.total || 0);
+    if (categoryMap[cat]) categoryMap[cat].revenue += parseFloat(o.subtotal || o.total || 0);
   });
 
   const catColors = { Vegetables: '#22c55e', Fruits: '#f59e0b', Grains: '#8b5cf6', Dairy: '#3b82f6', Spices: '#ef4444', Pulses: '#14b8a6', Others: '#6b7280' };
