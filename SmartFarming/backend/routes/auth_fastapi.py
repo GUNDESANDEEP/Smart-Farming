@@ -4,7 +4,7 @@ Handles: Farmer Login, Farmer Signup, OTP, Password Reset
 Path: /api/auth
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel as PydanticModel
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
