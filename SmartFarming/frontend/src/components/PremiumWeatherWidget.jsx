@@ -20,15 +20,21 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
   const dropdownRef = useRef(null);
 
   // Load weather data
-  const fetchWeather = async (targetCity) => {
+  const fetchWeather = async (targetCity, lat = null, lon = null) => {
     setLoading(true);
     try {
-      const res = await weatherAPI.getWeather(targetCity);
+      const res = await weatherAPI.getWeather(targetCity, lat, lon);
       const data = res.data;
       if (data && data.weather) {
         setWeather(data.weather);
-      } else {
+        if (data.weather.city) {
+          setCity(data.weather.city);
+        }
+      } else if (data) {
         setWeather(data);
+        if (data.city) {
+          setCity(data.city);
+        }
       }
     } catch (err) {
       console.error('Failed to load weather:', err);
@@ -37,9 +43,34 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
     }
   };
 
+  const detectLiveLocation = () => {
+    if (!navigator.geolocation) {
+      fetchWeather(city);
+      return;
+    }
+    setLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        fetchWeather(null, latitude, longitude);
+      },
+      (error) => {
+        console.error('Error getting geolocation:', error);
+        fetchWeather(city);
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  const handleCitySelect = (selectedCity) => {
+    setCity(selectedCity);
+    fetchWeather(selectedCity);
+    setShowDropdown(false);
+  };
+
   useEffect(() => {
-    fetchWeather(city);
-  }, [city]);
+    detectLiveLocation();
+  }, []);
 
   // Handle outside click to close dropdown
   useEffect(() => {
@@ -220,19 +251,45 @@ export default function PremiumWeatherWidget({ defaultLocation = 'Hyderabad' }) 
                 border: '1px solid rgba(255,255,255,0.1)',
                 borderRadius: '16px',
                 padding: '6px',
-                minWidth: '150px',
+                minWidth: '170px',
                 boxShadow: '0 10px 25px rgba(0,0,0,0.3)',
                 backdropFilter: 'blur(12px)',
                 zIndex: 10,
               }}
             >
+              <button
+                onClick={() => {
+                  detectLiveLocation();
+                  setShowDropdown(false);
+                }}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '8px 12px',
+                  background: 'rgba(56, 189, 248, 0.15)',
+                  border: 'none',
+                  borderRadius: '10px',
+                  color: '#38bdf8',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginBottom: '4px',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(56, 189, 248, 0.25)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'rgba(56, 189, 248, 0.15)'}
+              >
+                📍 Use Live Location
+              </button>
+              <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />
+
               {POPULAR_CITIES.map((c) => (
                 <button
                   key={c}
-                  onClick={() => {
-                    setCity(c);
-                    setShowDropdown(false);
-                  }}
+                  onClick={() => handleCitySelect(c)}
                   style={{
                     width: '100%',
                     textAlign: 'left',

@@ -991,9 +991,19 @@ export const tokenUtils = {
 
 // ==================== WEATHER API ====================
 export const weatherAPI = {
-  // Deployed backend uses 'location' param, not 'city'
-  getWeather: (city = 'Hyderabad') => apiClient.get('/weather', { params: { location: city } })
-    .catch(() => ({ data: { location: city, temperature: '--', weather: 'N/A', description: 'Weather data unavailable' } })),
+  getWeather: (city = null, lat = null, lon = null) => {
+    const params = {};
+    if (lat && lon) {
+      params.lat = lat;
+      params.lon = lon;
+    } else if (city) {
+      params.location = city;
+    } else {
+      params.location = 'Hyderabad';
+    }
+    return apiClient.get('/weather', { params })
+      .catch(() => ({ data: { city: city || 'Hyderabad', temp: '--', weather: 'N/A', description: 'Weather data unavailable' } }));
+  }
 };
 
 // ==================== UPLOAD API ====================
