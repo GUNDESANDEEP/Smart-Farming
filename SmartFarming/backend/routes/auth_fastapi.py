@@ -689,6 +689,146 @@ async def generic_signup(request: SignupRequest):
         )
 
 
+# Schema for OTP requests
+class SendOTPRequest(PydanticModel):
+    email: str
+
+class VerifyOTPRequest(PydanticModel):
+    email: str
+    otp: str
+
+class VerifyEmailRequest(PydanticModel):
+    otp: str
+
+@auth_router.post("/send-otp")
+async def send_otp(request: SendOTPRequest):
+    """
+    Send OTP verification email.
+    Frontend calls POST /api/auth/send-otp
+    """
+    try:
+        import random
+        import string
+        email = request.email.strip()
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        
+        # Check email format
+        if '@' not in email or '.' not in email:
+            raise HTTPException(status_code=400, detail="Invalid email format")
+            
+        # Generate 6-digit OTP code
+        otp_code = "".join(random.choices(string.digits, k=6))
+        
+        # Store in DB using OTP model
+        OTP.create(email=email, otp_code=otp_code, purpose='email_verification')
+        
+        # Send OTP email via EmailService
+        from utils.email_service import EmailService
+        res = EmailService.send_otp_email_safe(email, otp_code, purpose='email_verification')
+        
+        if not res.get('sent'):
+            raise HTTPException(status_code=500, detail="Failed to send OTP email")
+            
+        return {"success": True, "message": "Verification OTP sent to your email"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERR] send_otp: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@auth_router.post("/verify-otp")
+async def verify_otp(request: VerifyOTPRequest):
+    """
+    Verify OTP.
+    Frontend calls POST /api/auth/verify-otp
+    """
+    try:
+        email = request.email.strip()
+        otp_code = request.otp.strip()
+        
+        if not email or not otp_code:
+            raise HTTPException(status_code=400, detail="Email and OTP are required")
+            
+        # Verify OTP record in DB
+        otp_record = OTP.verify(email=email, otp_code=otp_code)
+        if not otp_record:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+            
+        # Mark as verified
+        OTP.mark_verified(otp_record['id'])
+        
+        return {"success": True, "verified": True, "message": "OTP verified successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERR] verify_otp: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@auth_router.post("/resend-otp")
+async def resend_otp(request: SendOTPRequest):
+    """
+    Resend OTP.
+    Frontend calls POST /api/auth/resend-otp
+    """
+    return await send_otp(request)
+
+
+@auth_router.post("/verify-email")
+async def verify_email(request: VerifyEmailRequest, user_id: str = Depends(get_current_user)):
+    """
+    Verify the logged-in user's email using the provided OTP.
+    Frontend calls POST /api/auth/verify-email
+    """
+    try:
+        otp_code = request.otp.strip()
+        if not otp_code:
+            raise HTTPException(status_code=400, detail="OTP code is required")
+            
+        # Get user's email from DB (check both farmers and buyers tables)
+        user = BaseModel.execute_query(
+            "SELECT email FROM farmers WHERE id = %s UNION SELECT email FROM buyers WHERE id = %s",
+            (int(user_id), int(user_id)),
+            fetch_one=True
+        )
+        if not user or not user.get('email'):
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        email = user['email']
+        
+        # Verify OTP
+        otp_record = OTP.verify(email=email, otp_code=otp_code)
+        if not otp_record:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+            
+        # Mark user as verified in DB
+        BaseModel.execute_query(
+            "UPDATE farmers SET is_verified = TRUE WHERE id = %s; UPDATE buyers SET is_verified = TRUE WHERE id = %s;",
+            (int(user_id), int(user_id))
+        )
+        
+        # Mark OTP as verified
+        OTP.mark_verified(otp_record['id'])
+        
+        return {"success": True, "message": "Email verified successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERR] verify_email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@auth_router.post("/logout")
+async def logout():
+    """
+    Logout route.
+    Frontend calls POST /api/auth/logout
+    """
+    return {"message": "Logged out successfully"}
+
+
 # ============================================================================
 # NOTIFICATIONS ENDPOINTS
 # ============================================================================
