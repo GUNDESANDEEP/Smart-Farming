@@ -100,18 +100,21 @@ const AdminUsers = ({ onUserChange }) => {
 
     setLoadingAction({ id: user.id, role: user.role, action: 'delete' });
     try {
-      // Try backend delete first
+      // Call backend to delete user
       await adminAPI.deleteUser(user.id, user.role);
+      
+      // Persist the deletion locally so it survives refresh
+      addDeletedId(user.id);
+      setUsers((prev) => prev.filter((u) => !isSameUser(u, user)));
+      toast.success(`${user.name || 'User'} has been permanently deleted`);
+      if (onUserChange) onUserChange();
     } catch (error) {
-      // Backend may not support delete — that's OK, we handle it locally
-      console.log('[DELETE] Backend delete failed, persisting locally');
+      console.error('[DELETE] Backend delete failed:', error);
+      const errMsg = error.response?.data?.error || error.response?.data?.message || 'Failed to delete user. Please check admin permissions.';
+      toast.error(errMsg);
+    } finally {
+      setLoadingAction(null);
     }
-    // Always persist the deletion locally so it survives refresh
-    addDeletedId(user.id);
-    setUsers((prev) => prev.filter((u) => !isSameUser(u, user)));
-    toast.success(`${user.name || 'User'} has been permanently deleted`);
-    setLoadingAction(null);
-    if (onUserChange) onUserChange();
   };
 
   const isLoading = (userId, userRole, action) =>

@@ -993,13 +993,17 @@ def _fa_check_admin(request):
         user_id = decoded.get('sub')
         role = decoded.get('role', '')
         if role not in ['admin', 'super_admin', 'moderator', 'analyst']:
+            print(f"[WARN] User role '{role}' is not an admin role")
             return None, user_id
         admin = BaseModel.execute_query(
             "SELECT *, admin_id as id FROM admins WHERE admin_id = %s",
             (int(user_id),), fetch_one=True
         )
         return admin, user_id
-    except Exception:
+    except Exception as e:
+        print(f"[ERR] _fa_check_admin failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 @admin_router.get('/dashboard')
@@ -1116,7 +1120,8 @@ async def fa_delete_user(target_user_id: str, request: FastAPIRequest):
         if not admin:
             return _ajson({'error': 'Admin access required'}, 403)
         data = await request.json()
-        role = data.get('role', '')
+        role = data.get('role', '').strip().lower()
+        print(f"[ADMIN-DELETE] Request to delete user id={target_user_id}, role={role}")
         deleted = False
         if role == 'farmer' or not role:
             r = BaseModel.execute_query("SELECT id FROM farmers WHERE id = %s", (target_user_id,), fetch_one=True)
