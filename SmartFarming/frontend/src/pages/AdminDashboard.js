@@ -14,20 +14,10 @@ const AdminUsers = ({ onUserChange }) => {
   const [users, setUsers] = useState([]);
   const [loadingAction, setLoadingAction] = useState(null); // {id, role, action}
 
-  // Persist deleted user IDs in localStorage so they stay deleted across refresh
-  const DELETED_KEY = 'admin_deleted_users';
-  const getDeletedIds = () => {
-    try {
-      return JSON.parse(localStorage.getItem(DELETED_KEY) || '[]');
-    } catch { return []; }
-  };
-  const addDeletedId = (userId) => {
-    const ids = getDeletedIds();
-    if (!ids.includes(userId)) {
-      ids.push(userId);
-      localStorage.setItem(DELETED_KEY, JSON.stringify(ids));
-    }
-  };
+  // Clear old localStorage blocklist to automatically restore previously hidden users
+  useEffect(() => {
+    localStorage.removeItem('admin_deleted_users');
+  }, []);
 
   useEffect(() => {
     fetchUsers();
@@ -47,7 +37,6 @@ const AdminUsers = ({ onUserChange }) => {
           ];
       // Normalize: ensure every user has an id, name, and status
       // MongoDB uses _id, PostgreSQL uses id/farmer_id/buyer_id
-      const deletedIds = getDeletedIds();
       const allUsers = rawUsers
         .map((u) => ({
           ...u,
@@ -55,8 +44,7 @@ const AdminUsers = ({ onUserChange }) => {
           name: u.name || `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email || 'N/A',
           role: u.role || u.role_name || 'farmer',
           status: u.isBanned ? 'suspended' : (u.is_active === false ? 'suspended' : (u.status || 'active')),
-        }))
-        .filter((u) => !deletedIds.includes(u.id)); // Filter out permanently deleted users
+        }));
       setUsers(allUsers);
     } catch (error) {
       toast.error('Failed to load users');
@@ -103,8 +91,6 @@ const AdminUsers = ({ onUserChange }) => {
       // Call backend to delete user
       await adminAPI.deleteUser(user.id, user.role);
       
-      // Persist the deletion locally so it survives refresh
-      addDeletedId(user.id);
       setUsers((prev) => prev.filter((u) => !isSameUser(u, user)));
       toast.success(`${user.name || 'User'} has been permanently deleted`);
       if (onUserChange) onUserChange();
