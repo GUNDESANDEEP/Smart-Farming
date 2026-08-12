@@ -21,8 +21,42 @@ if not DATABASE_URL:
     DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 
+def get_dsn_variants(url_str):
+    if not url_str:
+        return []
+    if url_str.startswith('postgres://'):
+        url_str = url_str.replace('postgres://', 'postgresql://', 1)
+    
+    import re
+    variants = [url_str]
+    if 'sslmode=' in url_str:
+        no_ssl = re.sub(r'[?&]sslmode=[^&]+', '', url_str)
+        if no_ssl and no_ssl not in variants:
+            variants.append(no_ssl)
+    else:
+        sep = '&' if '?' in url_str else '?'
+        ssl_req = f"{url_str}{sep}sslmode=require"
+        if ssl_req not in variants:
+            variants.append(ssl_req)
+        
+    return variants
+
+def get_connection():
+    dsn_candidates = get_dsn_variants(DATABASE_URL)
+    last_err = None
+    for dsn in dsn_candidates:
+        try:
+            return psycopg2.connect(dsn)
+        except Exception as e:
+            last_err = e
+    raise last_err
+
 def seed_users():
-    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        conn = get_connection()
+    except Exception as conn_err:
+        print(f"  [WARN] seed_users connection skipped: {conn_err}")
+        return
     cursor = conn.cursor()
 
     admin_email = os.getenv('ADMIN_EMAIL', 'gundesandeep2005@gmail.com')

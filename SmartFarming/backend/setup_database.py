@@ -677,6 +677,12 @@ def setup_database():
     print(f"\n{'=' * 60}")
     print(f"Setup complete: {success_count} succeeded, {error_count} failed")
     
+    try:
+        from seed_users import seed_users
+        seed_users()
+    except Exception as seed_err:
+        print(f"  [WARN] Automatic user seeding: {seed_err}")
+
     return error_count == 0
 
 
