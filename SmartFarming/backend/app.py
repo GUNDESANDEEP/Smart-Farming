@@ -514,12 +514,14 @@ def health_check():
     
     # Check PostgreSQL
     try:
-        if db_pool:
-            conn = db_pool.getconn()
+        from models.models import get_db_pool
+        pool = get_db_pool()
+        if pool:
+            conn = pool.getconn()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.close()
-            db_pool.putconn(conn)
+            pool.putconn(conn)
             health['database'] = 'connected'
         else:
             health['database'] = 'no pool'
