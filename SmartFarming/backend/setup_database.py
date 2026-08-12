@@ -14,15 +14,25 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 # Also try parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-def clean_database_url(url_str):
+def get_dsn_variants(url_str):
     if not url_str:
-        return url_str
+        return []
     if url_str.startswith('postgres://'):
         url_str = url_str.replace('postgres://', 'postgresql://', 1)
-    if 'localhost' not in url_str and '127.0.0.1' not in url_str and 'sslmode' not in url_str:
+    
+    import re
+    variants = [url_str]
+    if 'sslmode=' in url_str:
+        no_ssl = re.sub(r'[?&]sslmode=[^&]+', '', url_str)
+        if no_ssl and no_ssl not in variants:
+            variants.append(no_ssl)
+    else:
         sep = '&' if '?' in url_str else '?'
-        url_str += f"{sep}sslmode=require"
-    return url_str
+        ssl_req = f"{url_str}{sep}sslmode=require"
+        if ssl_req not in variants:
+            variants.append(ssl_req)
+        
+    return variants
 
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
@@ -34,22 +44,18 @@ if not DATABASE_URL:
     db_name = os.getenv('DB_NAME', 'smartfarmingdb')
     DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
-DATABASE_URL = clean_database_url(DATABASE_URL)
-
 def get_connection():
-    """Get PostgreSQL connection with auto-retry"""
-    import time
-    max_retries = 3
-    for attempt in range(max_retries):
+    """Get PostgreSQL connection with auto-retry across DSN variants"""
+    dsn_candidates = get_dsn_variants(DATABASE_URL)
+    last_err = None
+    for attempt, dsn in enumerate(dsn_candidates):
         try:
-            return psycopg2.connect(DATABASE_URL)
+            return psycopg2.connect(dsn)
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"[WARN] Database setup connection attempt {attempt + 1} failed ({e}). Retrying in 2s...")
-                time.sleep(2)
-            else:
-                print(f"[ERR] Database setup failed to connect after {max_retries} attempts.")
-                raise e
+            last_err = e
+            print(f"[WARN] Database setup connection attempt with DSN variant {attempt + 1} failed: {e}")
+    print(f"[ERR] Database setup failed to connect after trying {len(dsn_candidates)} DSN variants.")
+    raise last_err
 
 TABLES = [
     # ==================== FARMERS ====================
