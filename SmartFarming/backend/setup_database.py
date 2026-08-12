@@ -14,6 +14,16 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 # Also try parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
+def clean_database_url(url_str):
+    if not url_str:
+        return url_str
+    if url_str.startswith('postgres://'):
+        url_str = url_str.replace('postgres://', 'postgresql://', 1)
+    if 'neon.tech' in url_str and 'sslmode' not in url_str:
+        sep = '&' if '?' in url_str else '?'
+        url_str += f"{sep}sslmode=require"
+    return url_str
+
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
 if not DATABASE_URL:
@@ -23,12 +33,23 @@ if not DATABASE_URL:
     db_password = os.getenv('DB_PASSWORD', '')
     db_name = os.getenv('DB_NAME', 'smartfarmingdb')
     DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-    if db_host and 'neon.tech' in db_host:
-        DATABASE_URL += "?sslmode=require"
+
+DATABASE_URL = clean_database_url(DATABASE_URL)
 
 def get_connection():
-    """Get PostgreSQL connection"""
-    return psycopg2.connect(DATABASE_URL)
+    """Get PostgreSQL connection with auto-retry"""
+    import time
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return psycopg2.connect(DATABASE_URL)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"[WARN] Database setup connection attempt {attempt + 1} failed ({e}). Retrying in 2s...")
+                time.sleep(2)
+            else:
+                print(f"[ERR] Database setup failed to connect after {max_retries} attempts.")
+                raise e
 
 TABLES = [
     # ==================== FARMERS ====================

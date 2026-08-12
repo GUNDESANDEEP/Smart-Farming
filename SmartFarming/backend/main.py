@@ -56,6 +56,16 @@ app = FastAPI(
 # ============================================================================
 # DATABASE CONFIG (Neon PostgreSQL)
 # ============================================================================
+def clean_database_url(url_str):
+    if not url_str:
+        return url_str
+    if url_str.startswith('postgres://'):
+        url_str = url_str.replace('postgres://', 'postgresql://', 1)
+    if 'neon.tech' in url_str and 'sslmode' not in url_str:
+        sep = '&' if '?' in url_str else '?'
+        url_str += f"{sep}sslmode=require"
+    return url_str
+
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
 if not DATABASE_URL:
@@ -65,49 +75,64 @@ if not DATABASE_URL:
     db_password = os.getenv('DB_PASSWORD', '')
     db_name = os.getenv('DB_NAME', 'smartfarmingdb')
     DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-    if db_host and 'neon.tech' in db_host:
-        DATABASE_URL += "?sslmode=require"
+
+DATABASE_URL = clean_database_url(DATABASE_URL)
 
 # Connection Pool
 db_pool = None
 
 def initialize_db_pool():
-    global db_pool
+    global db_pool, DATABASE_URL
     if db_pool is not None:
-        return
-    try:
-        db_pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=5,
-            maxconn=30,
-            dsn=DATABASE_URL,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
-            connect_timeout=10,
-            options='-c statement_timeout=30000'
-        )
         from models.models import set_db_pool
         set_db_pool(db_pool)
-        print(f"[OK] PostgreSQL connection pool created (Neon)")
-        # Warmup
+        return db_pool
+
+    DATABASE_URL = clean_database_url(DATABASE_URL)
+    max_init_retries = 3
+    for attempt in range(max_init_retries):
         try:
-            warmup_conn = db_pool.getconn()
-            warmup_cur = warmup_conn.cursor()
-            warmup_cur.execute('SELECT 1')
-            warmup_cur.close()
-            db_pool.putconn(warmup_conn)
-            print(f"[OK] Database warmup successful")
-        except Exception as warmup_err:
-            print(f"[WARN] Database warmup failed (will retry on first request): {warmup_err}")
-    except Exception as e:
-        print(f"[ERR] PostgreSQL pool creation failed: {e}")
-        db_pool = None
+            db_pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=20,
+                dsn=DATABASE_URL,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+                connect_timeout=10,
+                options='-c statement_timeout=30000'
+            )
+            from models.models import set_db_pool
+            set_db_pool(db_pool)
+            print(f"[OK] PostgreSQL connection pool created (attempt {attempt + 1})")
+            
+            # Warmup connection test
+            try:
+                warmup_conn = db_pool.getconn()
+                warmup_cur = warmup_conn.cursor()
+                warmup_cur.execute('SELECT 1')
+                warmup_cur.close()
+                db_pool.putconn(warmup_conn)
+                print(f"[OK] Database warmup successful")
+            except Exception as warmup_err:
+                print(f"[WARN] Database warmup failed: {warmup_err}")
+                
+            return db_pool
+        except Exception as e:
+            print(f"[WARN] Database pool creation attempt {attempt + 1}/{max_init_retries} failed: {e}")
+            db_pool = None
+            if attempt < max_init_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+
+    print(f"[ERR] Failed to initialize PostgreSQL connection pool after {max_init_retries} attempts.")
+    return None
 
 
 def recreate_db_pool():
     """Recreate the database connection pool if all connections become stale."""
-    global db_pool
+    global db_pool, DATABASE_URL
+    DATABASE_URL = clean_database_url(DATABASE_URL)
     try:
         if db_pool:
             try:
@@ -115,7 +140,7 @@ def recreate_db_pool():
             except Exception:
                 pass
         db_pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=5, maxconn=10, dsn=DATABASE_URL,
+            minconn=1, maxconn=20, dsn=DATABASE_URL,
             keepalives=1, keepalives_idle=30, keepalives_interval=10,
             keepalives_count=5, connect_timeout=10,
             options='-c statement_timeout=30000'

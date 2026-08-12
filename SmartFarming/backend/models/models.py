@@ -17,7 +17,29 @@ def set_db_pool(pool):
 def get_db_pool():
     global _db_pool
     if _db_pool is None:
-        raise RuntimeError("Database pool not initialized")
+        import time as _time
+        for attempt in range(3):
+            try:
+                try:
+                    from main import initialize_db_pool, db_pool as main_db_pool
+                except ImportError:
+                    from app import initialize_db_pool, db_pool as main_db_pool
+                
+                pool = initialize_db_pool()
+                if pool is not None:
+                    _db_pool = pool
+                    break
+                elif main_db_pool is not None:
+                    _db_pool = main_db_pool
+                    set_db_pool(_db_pool)
+                    break
+            except Exception as e:
+                print(f"[WARN] Lazy DB pool initialization attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                _time.sleep(0.5 * (attempt + 1))
+
+    if _db_pool is None:
+        raise RuntimeError("Database pool not initialized. Server is starting up or database connection failed.")
     return _db_pool
 
 # ============================================================================
@@ -30,14 +52,24 @@ class BaseModel:
     def execute_query(query, params=None, fetch_one=False, fetch_all=False):
         """Execute query and return results (with auto-retry and pool recovery)"""
         import time as _time
-        pool = get_db_pool()
         max_retries = 3
         
         for attempt in range(max_retries):
             conn = None
             cursor = None
+            pool = None
             start = _time.time()
             try:
+                try:
+                    pool = get_db_pool()
+                except RuntimeError as pool_err:
+                    if attempt < max_retries - 1:
+                        print(f"[DB-RETRY] Pool not ready on attempt {attempt + 1}: {pool_err}. Retrying in 1s...")
+                        _time.sleep(1.0)
+                        continue
+                    else:
+                        raise pool_err
+
                 conn = pool.getconn()
                 
                 # Test if connection is alive
@@ -83,14 +115,14 @@ class BaseModel:
                     return [dict(row) for row in results] if results else []
                 else:
                     return cursor.rowcount
-            except (Exception,) as e:
+            except Exception as e:
                 if conn:
                     try:
                         conn.rollback()
                     except Exception:
                         pass
                 error_str = str(e).lower()
-                # Retry on transient connection/timeout errors
+                # Retry on transient connection/timeout/init errors
                 is_transient = (
                     'closed' in error_str or 
                     'connection' in error_str or 
@@ -98,12 +130,13 @@ class BaseModel:
                     'terminating connection' in error_str or
                     'timeout' in error_str or
                     'ssl' in error_str or
-                    'eof' in error_str
+                    'eof' in error_str or
+                    'database pool not initialized' in error_str
                 )
                 if attempt < max_retries - 1 and is_transient:
                     print(f"[DB-RETRY] Attempt {attempt + 1}/{max_retries} failed: {e}")
                     try:
-                        if conn:
+                        if conn and pool:
                             pool.putconn(conn, close=True)
                             conn = None
                     except Exception:
@@ -121,7 +154,6 @@ class BaseModel:
                             from app import recreate_db_pool
                         if recreate_db_pool():
                             print(f"[DB-RECOVERY] Pool recreated. Retrying query one final time...")
-                            # One more attempt with the new pool
                             new_pool = get_db_pool()
                             final_conn = new_pool.getconn()
                             try:
@@ -156,7 +188,7 @@ class BaseModel:
                         cursor.close()
                     except Exception:
                         pass
-                if conn:
+                if conn and pool:
                     try:
                         pool.putconn(conn)
                     except Exception:
@@ -164,30 +196,78 @@ class BaseModel:
     
     @staticmethod
     def execute_insert(query, params):
-        """Execute insert and return last insert id using RETURNING clause"""
-        pool = get_db_pool()
-        conn = pool.getconn()
-        try:
-            from psycopg2.extras import RealDictCursor
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+        """Execute insert and return last insert id using RETURNING clause (with auto-retry)"""
+        import time as _time
+        max_retries = 3
+        
+        # Add RETURNING id if not already present
+        query_upper = query.strip().upper()
+        if 'RETURNING' not in query_upper and query_upper.startswith('INSERT'):
+            query = query.rstrip().rstrip(';') + ' RETURNING id'
             
-            # Add RETURNING id if not already present
-            query_upper = query.strip().upper()
-            if 'RETURNING' not in query_upper and query_upper.startswith('INSERT'):
-                query = query.rstrip().rstrip(';') + ' RETURNING id'
-            
-            cursor.execute(query, params)
-            conn.commit()
-            
-            result = cursor.fetchone()
-            return result['id'] if result else None
-        except Exception as e:
-            conn.rollback()
-            print(f"Insert error: {e}")
-            raise
-        finally:
-            cursor.close()
-            pool.putconn(conn)
+        for attempt in range(max_retries):
+            conn = None
+            cursor = None
+            pool = None
+            try:
+                try:
+                    pool = get_db_pool()
+                except RuntimeError as pool_err:
+                    if attempt < max_retries - 1:
+                        print(f"[DB-INSERT-RETRY] Pool not ready on attempt {attempt + 1}: {pool_err}. Retrying in 1s...")
+                        _time.sleep(1.0)
+                        continue
+                    else:
+                        raise pool_err
+
+                conn = pool.getconn()
+                from psycopg2.extras import RealDictCursor
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                
+                cursor.execute(query, params)
+                conn.commit()
+                
+                result = cursor.fetchone()
+                return result['id'] if result else None
+            except Exception as e:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                error_str = str(e).lower()
+                is_transient = (
+                    'closed' in error_str or 
+                    'connection' in error_str or 
+                    'server closed' in error_str or
+                    'terminating connection' in error_str or
+                    'timeout' in error_str or
+                    'ssl' in error_str or
+                    'database pool not initialized' in error_str
+                )
+                if attempt < max_retries - 1 and is_transient:
+                    print(f"[DB-INSERT-RETRY] Attempt {attempt + 1}/{max_retries} failed: {e}")
+                    try:
+                        if conn and pool:
+                            pool.putconn(conn, close=True)
+                            conn = None
+                    except Exception:
+                        pass
+                    _time.sleep(0.5 * (attempt + 1))
+                    continue
+                print(f"Insert error: {e}")
+                raise
+            finally:
+                if cursor:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+                if conn and pool:
+                    try:
+                        pool.putconn(conn)
+                    except Exception:
+                        pass
 
 # ============================================================================
 # USER MODEL
