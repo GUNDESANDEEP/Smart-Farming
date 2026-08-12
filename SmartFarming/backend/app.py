@@ -37,7 +37,7 @@ def clean_database_url(url_str):
         return url_str
     if url_str.startswith('postgres://'):
         url_str = url_str.replace('postgres://', 'postgresql://', 1)
-    if 'neon.tech' in url_str and 'sslmode' not in url_str:
+    if 'localhost' not in url_str and '127.0.0.1' not in url_str and 'sslmode' not in url_str:
         sep = '&' if '?' in url_str else '?'
         url_str += f"{sep}sslmode=require"
     return url_str
