@@ -726,27 +726,36 @@ async def update_platform_settings(request: Request):
 # STARTUP EVENT
 # ============================================================================
 
-@app.on_event("startup")
-async def startup_event():
-    initialize_db_pool()
+async def _background_db_init():
+    """Run database pool setup, migrations, and index creation in background task"""
+    try:
+        initialize_db_pool()
+    except Exception as e:
+        print(f"[WARN] Startup DB pool init: {e}")
+        
     try:
         from routes.checkout import run_checkout_migration
         run_checkout_migration()
     except Exception as migration_err:
         print(f"[WARN] Checkout migration failed: {migration_err}")
-    port = int(os.getenv('PORT', 8000))
-    
-    # Initialize platform settings table
+        
     try:
         ensure_platform_settings_table()
     except Exception as e:
         print(f"[WARN] Platform settings init: {e}")
-    
-    # Create performance indexes
+        
     try:
         _create_performance_indexes()
     except Exception as e:
         print(f"[WARN] Index creation: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    # Fire off DB background warmup task without blocking port binding
+    asyncio.create_task(_background_db_init())
+    port = int(os.getenv('PORT', 8000))
     
     print(f"""
     ============================================
@@ -758,10 +767,6 @@ async def startup_event():
     Port: {port}
     Routers: {len(routers_registered)}
     Docs: http://localhost:{port}/docs
-    """)
-    for r in routers_registered:
-        print(f"    [OK] {r}")
-    print(f"""
     ============================================
     """)
 
