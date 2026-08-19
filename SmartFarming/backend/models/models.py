@@ -5,7 +5,22 @@ Includes: User, Farmer, Buyer, Admin, Product, Order, Payment, Review, etc.
 """
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 import json
+
+def serialize_row(row):
+    """Convert Decimal and datetime fields to JSON-serializable types"""
+    if not row:
+        return row
+    result = {}
+    for k, v in dict(row).items():
+        if isinstance(v, Decimal):
+            result[k] = float(v)
+        elif isinstance(v, datetime):
+            result[k] = v.isoformat()
+        else:
+            result[k] = v
+    return result
 
 # Global DB pool instance
 _db_pool = None
