@@ -747,7 +747,27 @@ async def update_platform_settings(request: Request):
         return {'success': True, 'updated': updated}
     except Exception as e:
         print(f"[Settings] Update error: {e}")
-        return JSONResponse(status_code=500, content={'error': 'Failed to update settings.'})
+@app.get("/api/setup-db")
+def trigger_db_setup():
+    """Manual endpoint to initialize database schema tables on Neon"""
+    try:
+        from setup_database import setup_database
+        conn = None
+        if db_pool:
+            try:
+                conn = db_pool.getconn()
+            except Exception as conn_err:
+                print(f"[WARN] Failed to get conn from pool: {conn_err}")
+                conn = None
+        res = setup_database(existing_conn=conn)
+        if conn and db_pool:
+            try:
+                db_pool.putconn(conn)
+            except Exception:
+                pass
+        return {"status": "success", "tables_created": res}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # ============================================================================
 # STARTUP EVENT
