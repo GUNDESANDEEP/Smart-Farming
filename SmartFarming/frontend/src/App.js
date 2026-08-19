@@ -137,7 +137,7 @@ function App() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const role = useAuthStore((state) => state.role);
 
-  const [showSplash, setShowSplash] = React.useState(() => !sessionStorage.getItem('splash_shown'));
+  const [showSplash, setShowSplash] = React.useState(true);
 
   useEffect(() => {
     initializeAuth();
@@ -145,7 +145,6 @@ function App() {
   }, [initializeAuth]);
 
   const handleSplashComplete = () => {
-    sessionStorage.setItem('splash_shown', 'true');
     setShowSplash(false);
   };
 

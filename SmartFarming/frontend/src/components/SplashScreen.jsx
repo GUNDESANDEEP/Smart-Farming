@@ -34,14 +34,14 @@ const SplashScreen = ({ onComplete }) => {
       clearTimeout(fadeTimer);
       clearTimeout(completeTimer);
     };
-  }, [onComplete]);
+  }, []);
 
   return (
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 99999,
+        zIndex: 999999,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
