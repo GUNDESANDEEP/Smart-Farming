@@ -727,6 +727,59 @@ class Product(BaseModel):
         return Product.execute_query(query, values) > 0
     
     @staticmethod
+    def check_stock_available(product_id, requested_qty):
+        """Check if requested quantity is available in database stock"""
+        query = "SELECT id, name, quantity, is_available, unit FROM products WHERE id = %s"
+        product = Product.execute_query(query, (product_id,), fetch_one=True)
+        if not product:
+            return False, "Product not found", 0.0
+        
+        current_stock = float(product.get('quantity') or 0)
+        is_avail = product.get('is_available', True)
+        name = product.get('name', 'Product')
+        unit = product.get('unit', 'kg')
+        
+        if not is_avail or current_stock <= 0:
+            return False, f"'{name}' is currently Out of Stock.", current_stock
+            
+        requested = float(requested_qty)
+        if current_stock < requested:
+            return False, f"Insufficient stock available for '{name}'. Available: {current_stock} {unit}, Requested: {requested} {unit}.", current_stock
+            
+        return True, "Stock available", current_stock
+
+    @staticmethod
+    def reduce_stock(product_id, qty_to_reduce):
+        """Atomically reduce product stock and update availability status"""
+        qty = float(qty_to_reduce)
+        query = """
+        UPDATE products 
+        SET quantity = GREATEST(0, quantity - %s),
+            is_available = CASE WHEN (quantity - %s) <= 0 THEN FALSE ELSE is_available END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s AND quantity >= %s AND is_available = TRUE
+        RETURNING id, name, quantity, is_available
+        """
+        res = Product.execute_query(query, (qty, qty, product_id, qty), fetch_one=True)
+        if not res:
+            # Fallback if stock was less than qty
+            fallback_query = """
+            UPDATE products 
+            SET quantity = 0, is_available = FALSE, updated_at = CURRENT_TIMESTAMP 
+            WHERE id = %s 
+            RETURNING id, name, quantity, is_available
+            """
+            res = Product.execute_query(fallback_query, (product_id,), fetch_one=True)
+            
+        try:
+            from utils.cache import cache_invalidate_pattern
+            cache_invalidate_pattern("products:*")
+        except Exception:
+            pass
+            
+        return res
+
+    @staticmethod
     def increment_views(product_id):
         """Increment product views"""
         query = "UPDATE products SET views_count = COALESCE(views_count, 0) + 1 WHERE id = %s"

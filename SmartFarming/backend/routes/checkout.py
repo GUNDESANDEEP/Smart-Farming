@@ -6,7 +6,7 @@ Handles: Checkout, Razorpay payments, COD, order tracking, farmer orders, wallet
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
 from utils.jwt_utils import get_current_user
-from models.models import BaseModel
+from models.models import BaseModel, Product, serialize_row
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
@@ -367,6 +367,23 @@ async def create_order(request: Request, user_id: str = Depends(get_current_user
         if not delivery_address:
             return JSONResponse(status_code=400, content={'error': 'Delivery address required'})
         
+        # Check stock availability for all items before creating order
+        for item in items:
+            pid = item.get('product_id')
+            qty = float(item.get('quantity', 1))
+            if pid:
+                is_valid, msg, available_stock = Product.check_stock_available(pid, qty)
+                if not is_valid:
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            'error': 'Insufficient stock available.',
+                            'message': msg,
+                            'product_id': pid,
+                            'available_stock': available_stock
+                        }
+                    )
+
         # Calculate totals
         subtotal = 0
         farmer_id = None
@@ -440,7 +457,8 @@ async def create_order(request: Request, user_id: str = Depends(get_current_user
         if not oid:
             return JSONResponse(status_code=500, content={'error': 'Failed to create order'})
         
-        # Insert order items
+        # Insert order items and reduce stock
+        remaining_stocks = []
         for oi in order_items:
             BaseModel.execute_query(
                 """INSERT INTO checkout_order_items 
@@ -449,6 +467,9 @@ async def create_order(request: Request, user_id: str = Depends(get_current_user
                 (oid, oi['product_id'], oi['product_name'], oi['product_image'],
                  oi['quantity'], oi['unit_price'], oi['total_price'], oi['farmer_id'])
             )
+            updated_p = Product.reduce_stock(oi['product_id'], oi['quantity'])
+            if updated_p:
+                remaining_stocks.append(serialize_row(updated_p))
         
         # Add status history
         _add_status_history(oid, order_status, f'Order placed via {payment_method.upper()}', 'buyer')
@@ -486,6 +507,7 @@ async def create_order(request: Request, user_id: str = Depends(get_current_user
             'farmer_name': farmer_name,
             'farmer_upi': farmer_upi,
             'admin_upi': '9492147313@ybl',
+            'remaining_stocks': remaining_stocks
         }
         
         # For COD — order is immediately confirmed

@@ -248,7 +248,8 @@ export default function Checkout() {
       }
     } catch (err) {
       console.error('Order error:', err);
-      toast.error('Failed to place order');
+      const errorMsg = err.response?.data?.message || err.response?.data?.error || 'Failed to place order';
+      toast.error(errorMsg);
     } finally {
       setPlacing(false);
     }

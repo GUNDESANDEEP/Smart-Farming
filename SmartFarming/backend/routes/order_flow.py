@@ -6,7 +6,7 @@ Routes for tracking, status updates, reviews, and returns
 from fastapi import APIRouter, Request, Query, Depends
 from fastapi.responses import JSONResponse
 from utils.jwt_utils import get_current_user
-from models.models import BaseModel
+from models.models import BaseModel, Product
 from datetime import datetime
 import json
 
@@ -976,6 +976,12 @@ async def checkout(request: Request, user_id: str = Depends(get_current_user)):
                  delivery_address, notes)
             )
             
+            # Atomically reduce product stock in database
+            try:
+                Product.reduce_stock(item['product_id'], qty)
+            except Exception as stock_err:
+                print(f"[WARN] Failed to reduce stock for product {item['product_id']}: {stock_err}")
+
             # Record in platform_earnings (admin revenue tracking)
             # platform_fee now includes delivery_fee share for this order
             try:
