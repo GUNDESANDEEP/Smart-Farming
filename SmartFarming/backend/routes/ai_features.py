@@ -8,7 +8,85 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from models.models import Farmer
 import json
 
-ai_bp = Blueprint('ai', __name__)
+def get_matrix_recommendations(season, soil_type):
+    s = (season or "monsoon").lower()
+    st = (soil_type or "loam").lower()
+    
+    matrix = {
+        ("monsoon", "black"): [
+            {"rank": 1, "crop": "Cotton", "confidence": 0.96, "profitability": "high", "growing_period_days": 160, "water_requirement": "medium", "tips": ["Apply NPK 120:60:60", "Monitor for pink bollworm pest", "Maintain 90x60 cm row spacing"]},
+            {"rank": 2, "crop": "Soybean", "confidence": 0.91, "profitability": "high", "growing_period_days": 95, "water_requirement": "medium", "tips": ["Inoculate seeds with Rhizobium culture", "45 cm row spacing", "Watch for yellow mosaic virus"]},
+            {"rank": 3, "crop": "Groundnut (Peanut)", "confidence": 0.85, "profitability": "medium", "growing_period_days": 105, "water_requirement": "low-medium", "tips": ["Apply Gypsum at pegging stage", "Avoid standing water in fields"]}
+        ],
+        ("monsoon", "sandy"): [
+            {"rank": 1, "crop": "Pearl Millet (Bajra)", "confidence": 0.94, "profitability": "medium", "growing_period_days": 85, "water_requirement": "low", "tips": ["Highly drought-resistant crop", "Apply NPK 80:40:0", "Maintain 45x15 cm spacing"]},
+            {"rank": 2, "crop": "Cluster Bean (Guar)", "confidence": 0.89, "profitability": "high", "growing_period_days": 90, "water_requirement": "low", "tips": ["Natural nitrogen-fixing crop", "High industrial gum market demand", "Requires minimal synthetic fertilizer"]},
+            {"rank": 3, "crop": "Sesame (Til)", "confidence": 0.84, "profitability": "high", "growing_period_days": 80, "water_requirement": "very low", "tips": ["Avoid waterlogging in sandy soil", "Thin seedlings at 15 days", "Harvest when bottom capsules turn yellow"]}
+        ],
+        ("monsoon", "clay"): [
+            {"rank": 1, "crop": "Paddy (Rice)", "confidence": 0.97, "profitability": "high", "growing_period_days": 120, "water_requirement": "high", "tips": ["Clay soil retains water exceptionally well", "Maintain 5-8 cm standing water", "Apply NPK 120:60:40 in 3 split doses"]},
+            {"rank": 2, "crop": "Sugarcane", "confidence": 0.90, "profitability": "high", "growing_period_days": 330, "water_requirement": "high", "tips": ["Deep trench planting method", "Trash mulching for soil moisture retention"]},
+            {"rank": 3, "crop": "Jute / Hemp", "confidence": 0.83, "profitability": "medium", "growing_period_days": 120, "water_requirement": "high", "tips": ["Thrives in warm, humid clay soils", "Retting water availability is crucial"]}
+        ],
+        ("monsoon", "red"): [
+            {"rank": 1, "crop": "Groundnut (Peanut)", "confidence": 0.93, "profitability": "high", "growing_period_days": 105, "water_requirement": "medium", "tips": ["Well-drained red soil promotes pod formation", "Apply Gypsum @ 400 kg/ha at 45 days"]},
+            {"rank": 2, "crop": "Finger Millet (Ragi)", "confidence": 0.90, "profitability": "high", "growing_period_days": 100, "water_requirement": "low-medium", "tips": ["Rich in calcium and iron", "Tolerates semi-arid red soil stress"]},
+            {"rank": 3, "crop": "Maize (Corn)", "confidence": 0.85, "profitability": "medium", "growing_period_days": 105, "water_requirement": "medium", "tips": ["Add organic compost to boost red soil organic carbon"]}
+        ],
+        ("winter", "loam"): [
+            {"rank": 1, "crop": "Wheat", "confidence": 0.96, "profitability": "high", "growing_period_days": 135, "water_requirement": "medium", "tips": ["Irrigate at Crown Root Initiation stage (21 days)", "Apply NPK 120:60:40"]},
+            {"rank": 2, "crop": "Mustard / Rapeseed", "confidence": 0.92, "profitability": "high", "growing_period_days": 110, "water_requirement": "low-medium", "tips": ["Sulfur application boosts seed oil content by 15%", "Thin plants to 10-15 cm spacing"]},
+            {"rank": 3, "crop": "Chickpea (Gram / Chana)", "confidence": 0.88, "profitability": "high", "growing_period_days": 110, "water_requirement": "low", "tips": ["Nipping top buds at 35 days increases branching and pods"]}
+        ],
+        ("winter", "black"): [
+            {"rank": 1, "crop": "Chickpea (Gram / Chana)", "confidence": 0.95, "profitability": "high", "growing_period_days": 115, "water_requirement": "low", "tips": ["Thrives on deep residual moisture of black soil", "Avoid over-irrigation"]},
+            {"rank": 2, "crop": "Wheat (Durum / Sharbati)", "confidence": 0.90, "profitability": "high", "growing_period_days": 130, "water_requirement": "medium", "tips": ["Apply Zinc Sulfate @ 25 kg/ha at sowing"]},
+            {"rank": 3, "crop": "Safflower (Kusum)", "confidence": 0.86, "profitability": "medium", "growing_period_days": 120, "water_requirement": "low", "tips": ["Deep root system extracts moisture from subsoil", "Drought tolerant oilseed crop"]}
+        ],
+        ("winter", "sandy"): [
+            {"rank": 1, "crop": "Barley", "confidence": 0.93, "profitability": "medium", "growing_period_days": 100, "water_requirement": "low", "tips": ["Tolerates sandy soil and salinity", "Lower water needs than wheat"]},
+            {"rank": 2, "crop": "Mustard", "confidence": 0.89, "profitability": "high", "growing_period_days": 105, "water_requirement": "low", "tips": ["Drip irrigation with fertigation gives optimal yields"]},
+            {"rank": 3, "crop": "Cumin (Jeera) / Coriander", "confidence": 0.84, "profitability": "high", "growing_period_days": 110, "water_requirement": "low", "tips": ["Requires cool dry climate, avoid excessive dampness"]}
+        ],
+        ("winter", "red"): [
+            {"rank": 1, "crop": "Potato", "confidence": 0.94, "profitability": "high", "growing_period_days": 95, "water_requirement": "medium", "tips": ["Friable red soil permits free tuber expansion", "Earthing up at 30 days"]},
+            {"rank": 2, "crop": "Mustard", "confidence": 0.89, "profitability": "high", "growing_period_days": 110, "water_requirement": "low-medium", "tips": ["Apply Boron @ 10 kg/ha for better pod development"]},
+            {"rank": 3, "crop": "Sunflower", "confidence": 0.84, "profitability": "medium", "growing_period_days": 95, "water_requirement": "medium", "tips": ["Ensure honeybee activity or manual pollination during flowering"]}
+        ],
+        ("summer", "sandy"): [
+            {"rank": 1, "crop": "Watermelon / Muskmelon", "confidence": 0.96, "profitability": "high", "growing_period_days": 85, "water_requirement": "medium", "tips": ["Sandy soil warms quickly, accelerating vine growth", "Use plastic mulching & drip irrigation"]},
+            {"rank": 2, "crop": "Cucumber / Gourd", "confidence": 0.91, "profitability": "high", "growing_period_days": 65, "water_requirement": "medium", "tips": ["Trellis staking keeps fruits clean and prevents soil rot"]},
+            {"rank": 3, "crop": "Cowpea / Green Gram (Moong)", "confidence": 0.87, "profitability": "medium", "growing_period_days": 65, "water_requirement": "low", "tips": ["Short duration summer pulse crop", "Improves soil fertility for Kharif"]}
+        ],
+        ("summer", "black"): [
+            {"rank": 1, "crop": "Green Gram (Moong Dal)", "confidence": 0.94, "profitability": "high", "growing_period_days": 65, "water_requirement": "low", "tips": ["Ideal catch crop between Rabi and Kharif", "Requires minimal irrigation"]},
+            {"rank": 2, "crop": "Sesame (Til)", "confidence": 0.89, "profitability": "high", "growing_period_days": 75, "water_requirement": "low", "tips": ["Highly heat tolerant", "Strong summer market prices"]},
+            {"rank": 3, "crop": "Sunflower", "confidence": 0.85, "profitability": "medium", "growing_period_days": 85, "water_requirement": "medium", "tips": ["High solar radiation boosts seed oil content"]}
+        ]
+    }
+    
+    key = (s, st)
+    if key in matrix:
+        return matrix[key]
+    
+    if s == "winter":
+        return [
+            {"rank": 1, "crop": "Wheat", "confidence": 0.95, "profitability": "high", "growing_period_days": 135, "water_requirement": "medium", "tips": ["Crown Root Initiation irrigation at 21 days", "Apply NPK 120:60:40"]},
+            {"rank": 2, "crop": "Mustard", "confidence": 0.90, "profitability": "high", "growing_period_days": 110, "water_requirement": "low-medium", "tips": ["Apply sulfur for higher oil yield", "Thin seedlings to 10-15 cm"]},
+            {"rank": 3, "crop": "Chickpea (Chana)", "confidence": 0.86, "profitability": "high", "growing_period_days": 110, "water_requirement": "low", "tips": ["Nipping terminal shoots increases branching"]}
+        ]
+    elif s == "summer":
+        return [
+            {"rank": 1, "crop": "Watermelon / Muskmelon", "confidence": 0.95, "profitability": "high", "growing_period_days": 85, "water_requirement": "medium", "tips": ["Use drip irrigation", "High summer market demand"]},
+            {"rank": 2, "crop": "Green Gram (Moong)", "confidence": 0.90, "profitability": "medium", "growing_period_days": 65, "water_requirement": "low", "tips": ["Short duration 60-day crop", "Fixes soil nitrogen"]},
+            {"rank": 3, "crop": "Okra (Bhindi)", "confidence": 0.85, "profitability": "high", "growing_period_days": 75, "water_requirement": "medium", "tips": ["Harvest every 2 days for continuous yield"]}
+        ]
+    else:
+        return [
+            {"rank": 1, "crop": "Paddy (Rice)", "confidence": 0.94, "profitability": "high", "growing_period_days": 120, "water_requirement": "high", "tips": ["Use quality certified seeds", "Maintain water level of 5-8 cm", "Apply NPK 60:40:40 in 3 splits"]},
+            {"rank": 2, "crop": "Maize (Corn)", "confidence": 0.88, "profitability": "medium", "growing_period_days": 110, "water_requirement": "medium", "tips": ["Space 60cm between rows", "Apply NPK 120:60:40", "Monitor for fall armyworm"]},
+            {"rank": 3, "crop": "Soybean", "confidence": 0.82, "profitability": "high", "growing_period_days": 95, "water_requirement": "medium", "tips": ["Apply Rhizobium culture", "Spacing: 45cm rows", "Watch for yellow mosaic virus"]}
+        ]
 
 # ==================== CROP RECOMMENDATION ====================
 @ai_bp.route('/crop-recommendation', methods=['GET'])
@@ -50,76 +128,7 @@ def get_crop_recommendation():
         season = request.args.get('season', 'monsoon')
         soil_type = request.args.get('soil_type', 'loam')
         
-        # TODO: Implement crop recommendation model
-        # 1. Get farmer's location, land size, crops_grown
-        # 2. Get historical weather data for location
-        # 3. Use Random Forest or Decision Tree model
-        # 4. Rank crops by profitability and feasibility
-        # 5. Add cultivation tips
-        
-        # Sample recommendations (replace with ML model)
-        recommendations = [
-            {
-                'rank': 1,
-                'crop': 'Paddy (Rice)',
-                'confidence': 0.94,
-                'avg_price_per_ton': 4500,
-                'expected_yield_per_hectare': 50,
-                'growing_period_days': 120,
-                'water_requirement': 'high',
-                'soil_preference': 'loam',
-                'season': 'monsoon',
-                'planting_date': '2026-06-15',
-                'expected_harvest': '2026-10-15',
-                'profitability': 'high',
-                'tips': [
-                    'Use quality certified seeds (2.5 kg/ha)',
-                    'Maintain water level of 5-8 cm',
-                    'Apply NPK 60:40:40 in 3 splits',
-                    'Monitor for stem borer and leaf folder pests'
-                ]
-            },
-            {
-                'rank': 2,
-                'crop': 'Maize (Corn)',
-                'confidence': 0.88,
-                'avg_price_per_ton': 2800,
-                'expected_yield_per_hectare': 45,
-                'growing_period_days': 110,
-                'water_requirement': 'medium',
-                'soil_preference': 'loam',
-                'season': 'monsoon',
-                'planting_date': '2026-06-10',
-                'expected_harvest': '2026-10-10',
-                'profitability': 'medium',
-                'tips': [
-                    'Space: 60cm between rows, 25cm between plants',
-                    'Apply NPK 120:60:40',
-                    'Thin seedlings at 3 weeks',
-                    'Monitor for fall armyworm'
-                ]
-            },
-            {
-                'rank': 3,
-                'crop': 'Soybean',
-                'confidence': 0.82,
-                'avg_price_per_ton': 5500,
-                'expected_yield_per_hectare': 20,
-                'growing_period_days': 95,
-                'water_requirement': 'medium',
-                'soil_preference': 'loam',
-                'season': 'monsoon',
-                'planting_date': '2026-06-20',
-                'expected_harvest': '2026-10-15',
-                'profitability': 'high',
-                'tips': [
-                    'Use Roundup-ready varieties',
-                    'Apply Rhizobium culture to seeds',
-                    'Spacing: 45cm rows',
-                    'Yellow mosaic virus is major threat'
-                ]
-            }
-        ]
+        recommendations = get_matrix_recommendations(season, soil_type)
         
         return {
             'success': True,

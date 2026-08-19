@@ -116,7 +116,8 @@ export default function FarmerAITools() {
     setLoading(true);
     try {
       const res = await apiClient.get('/ai/crop-recommendation', { params: { season, soil_type: soilType } });
-      if (res.data && res.data.recommendations && Array.isArray(res.data.recommendations) && res.data.recommendations.length > 0) {
+      const recs = res.data?.recommendations;
+      if (recs && Array.isArray(recs) && recs.length > 0 && !(season !== 'monsoon' && recs[0]?.crop?.includes('Paddy'))) {
         setCropRecs(res.data);
       } else {
         setCropRecs({ recommendations: getDynamicCropRecs(season, soilType) });
