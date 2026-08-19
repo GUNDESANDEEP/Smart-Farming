@@ -754,12 +754,19 @@ async def update_platform_settings(request: Request):
 # ============================================================================
 
 async def _background_db_init():
-    """Run database pool setup, migrations, and index creation in background task"""
+    """Run database pool setup, core schema setup, migrations, and index creation in background task"""
     try:
         initialize_db_pool()
     except Exception as e:
         print(f"[WARN] Startup DB pool init: {e}")
         
+    try:
+        from setup_database import setup_database
+        setup_database()
+        print("[OK] Core database schema verified & setup completed")
+    except Exception as setup_err:
+        print(f"[WARN] Core database setup: {setup_err}")
+
     try:
         from routes.checkout import run_checkout_migration
         run_checkout_migration()
