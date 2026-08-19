@@ -12,6 +12,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import useAuthStore from './services/authStore';
 import { warmupServer } from './services/api';
 import GlobalCursor from './components/GlobalCursor';
+import SplashScreen from './components/SplashScreen';
 import './styles/index.css';
 
 // ============================================================================
@@ -133,14 +134,24 @@ class ChunkErrorBoundary extends React.Component {
 
 function App() {
   const initializeAuth = useAuthStore((state) => state.initializeAuth);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const role = useAuthStore((state) => state.role);
+
+  const [showSplash, setShowSplash] = React.useState(() => !sessionStorage.getItem('splash_shown'));
 
   useEffect(() => {
     initializeAuth();
     warmupServer();
   }, [initializeAuth]);
 
+  const handleSplashComplete = () => {
+    sessionStorage.setItem('splash_shown', 'true');
+    setShowSplash(false);
+  };
+
   return (
     <Router basename={process.env.PUBLIC_URL || ''}>
+      {showSplash && <SplashScreen onComplete={handleSplashComplete} />}
       <GlobalCursor />
       <Toaster
         position="top-right"
@@ -160,7 +171,19 @@ function App() {
       <ChunkErrorBoundary>
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route path="/" element={<LandingPage />} />
+            <Route 
+              path="/" 
+              element={
+                isAuthenticated ? (
+                  role === 'farmer' ? <Navigate to="/farmer/dashboard" replace /> :
+                  role === 'buyer' ? <Navigate to="/buyer/dashboard" replace /> :
+                  role === 'admin' ? <Navigate to="/admin/dashboard" replace /> :
+                  <LandingPage />
+                ) : (
+                  <LandingPage />
+                )
+              } 
+            />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup/:role" element={<SignupPage />} />
             
