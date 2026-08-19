@@ -1,0 +1,16 @@
+{
+  "projectId": "prj_xpKss8qVNeoOwxZSgAINLqaPCCSj",
+  "orgId": "team_VKqIyAmI1z9Xj1wdzCeGNazV",
+  "projectName": "smart.--farming.--marketplace",
+  "settings": {
+    "createdAt": 1781606960212,
+    "framework": null,
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "24.x"
+  }
+}

@@ -99,17 +99,33 @@ def initialize_db_pool():
     dsn_candidates = get_dsn_variants(DATABASE_URL)
     for attempt, dsn in enumerate(dsn_candidates):
         try:
-            db_pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=1,
-                maxconn=20,
-                dsn=dsn,
-                keepalives=1,
-                keepalives_idle=30,
-                keepalives_interval=10,
-                keepalives_count=5,
-                connect_timeout=10,
-                options='-c statement_timeout=30000'
-            )
+            try:
+                db_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=20,
+                    dsn=dsn,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                    connect_timeout=10,
+                    options='-c statement_timeout=30000'
+                )
+            except Exception as opt_err:
+                if 'statement_timeout' in str(opt_err) or 'options' in str(opt_err) or 'startup parameter' in str(opt_err):
+                    db_pool = psycopg2.pool.ThreadedConnectionPool(
+                        minconn=1,
+                        maxconn=20,
+                        dsn=dsn,
+                        keepalives=1,
+                        keepalives_idle=30,
+                        keepalives_interval=10,
+                        keepalives_count=5,
+                        connect_timeout=10
+                    )
+                else:
+                    raise opt_err
+
             from models.models import set_db_pool
             set_db_pool(db_pool)
             print(f"[OK] PostgreSQL connection pool created (candidate {attempt + 1})")
@@ -146,12 +162,23 @@ def recreate_db_pool():
                     db_pool.closeall()
                 except Exception:
                     pass
-            db_pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=1, maxconn=20, dsn=dsn,
-                keepalives=1, keepalives_idle=30, keepalives_interval=10,
-                keepalives_count=5, connect_timeout=10,
-                options='-c statement_timeout=30000'
-            )
+            try:
+                db_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=20, dsn=dsn,
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10,
+                    keepalives_count=5, connect_timeout=10,
+                    options='-c statement_timeout=30000'
+                )
+            except Exception as opt_err:
+                if 'statement_timeout' in str(opt_err) or 'options' in str(opt_err) or 'startup parameter' in str(opt_err):
+                    db_pool = psycopg2.pool.ThreadedConnectionPool(
+                        minconn=1, maxconn=20, dsn=dsn,
+                        keepalives=1, keepalives_idle=30, keepalives_interval=10,
+                        keepalives_count=5, connect_timeout=10
+                    )
+                else:
+                    raise opt_err
+
             from models.models import set_db_pool
             set_db_pool(db_pool)
             print(f"[OK] Database pool recreated successfully")
