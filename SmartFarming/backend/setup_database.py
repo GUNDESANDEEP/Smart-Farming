@@ -565,18 +565,24 @@ UPDATE_TRIGGER_TABLES = [
 ]
 
 
-def setup_database():
+def setup_database(existing_conn=None):
     """Create all required tables safely"""
-    try:
-        conn = get_connection()
-    except Exception as e:
-        print(f"[WARN] Database setup connection skipped: {e}")
-        return False
+    should_close = False
+    if existing_conn:
+        conn = existing_conn
+    else:
+        try:
+            conn = get_connection()
+            should_close = True
+        except Exception as e:
+            print(f"[WARN] Database setup connection skipped: {e}")
+            return False
 
     cursor = conn.cursor()
     
     print(f"Connected to PostgreSQL (Neon)")
-    print(f"Database URL: {DATABASE_URL[:50]}...")
+    url_to_print = os.getenv('DATABASE_URL', '') or DATABASE_URL
+    print(f"Database URL: {url_to_print[:50]}...")
     print("=" * 60)
     
     success_count = 0
@@ -668,11 +674,12 @@ def setup_database():
     print(f"\nTables in database:")
     for t in tables:
         print(f"   - {t[0]}")
-    try:
-        cursor.close()
-        conn.close()
-    except Exception:
-        pass
+    if should_close:
+        try:
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
     
     print(f"\n{'=' * 60}")
     print(f"Setup complete: {success_count} succeeded, {error_count} failed")

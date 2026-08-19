@@ -762,7 +762,18 @@ async def _background_db_init():
         
     try:
         from setup_database import setup_database
-        setup_database()
+        conn = None
+        if db_pool:
+            try:
+                conn = db_pool.getconn()
+            except Exception:
+                conn = None
+        setup_database(existing_conn=conn)
+        if conn and db_pool:
+            try:
+                db_pool.putconn(conn)
+            except Exception:
+                pass
         print("[OK] Core database schema verified & setup completed")
     except Exception as setup_err:
         print(f"[WARN] Core database setup: {setup_err}")
